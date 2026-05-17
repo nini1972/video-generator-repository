@@ -51,8 +51,8 @@
         /* Glassmorphism utility */
         .glass-panel {
             background: var(--bg-surface);
-            backdrop-filter: blur(12px);
             -webkit-backdrop-filter: blur(12px);
+            backdrop-filter: blur(12px);
             border: 1px solid var(--border-subtle);
             border-radius: 16px;
             box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
@@ -71,6 +71,7 @@
             padding: 24px 5%;
             border-bottom: 1px solid var(--border-subtle);
             background: rgba(6, 7, 13, 0.8);
+            -webkit-backdrop-filter: blur(8px);
             backdrop-filter: blur(8px);
             position: sticky;
             top: 0;
@@ -87,6 +88,7 @@
             font-size: 28px;
             background: linear-gradient(135deg, var(--accent-gold), var(--accent-cyan));
             -webkit-background-clip: text;
+            background-clip: text;
             -webkit-text-fill-color: transparent;
             filter: drop-shadow(0 2px 10px rgba(var(--accent-gold-rgb), 0.3));
         }
@@ -98,6 +100,7 @@
             letter-spacing: -0.5px;
             background: linear-gradient(to right, #ffffff, #c2c9d6);
             -webkit-background-clip: text;
+            background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
@@ -508,6 +511,7 @@
             font-size: 56px;
             background: linear-gradient(135deg, var(--accent-gold), var(--accent-cyan));
             -webkit-background-clip: text;
+            background-clip: text;
             -webkit-text-fill-color: transparent;
             margin-bottom: 8px;
             filter: drop-shadow(0 0 20px rgba(var(--accent-gold-rgb), 0.2));
@@ -671,6 +675,7 @@
             top: 12px;
             left: 12px;
             background: rgba(6, 7, 13, 0.85);
+            -webkit-backdrop-filter: blur(4px);
             backdrop-filter: blur(4px);
             padding: 4px 10px;
             border-radius: 20px;
@@ -792,7 +797,7 @@
                         <span class="toggle-info-desc">Use premium Flowith cached assets</span>
                     </div>
                     <label class="switch">
-                        <input type="checkbox" id="forceMock" checked>
+                        <input type="checkbox" id="forceMock">
                         <span class="slider"></span>
                     </label>
                 </div>

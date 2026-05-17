@@ -4,8 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from movie_generator.agent_pipeline import AgentPipeline
+from movie_generator.stitcher.ffmpeg_assembler import FFmpegAssembler
 
 app = FastAPI(title="CineRepo Server", description="Cognitive agent pipeline turning codebases into short cinematic films.")
+
+# Lightweight singleton for status checks — avoids constructing genai.Client on every poll
+_ffmpeg_checker = FFmpegAssembler()
 
 # Enable CORS for frontend dashboard communication
 app.add_middleware(
@@ -31,10 +35,9 @@ def read_root():
 
 @app.get("/api/status")
 def get_status():
-    pipeline = AgentPipeline()
     return {
         "status": "online",
-        "ffmpeg_available": pipeline.stitcher.is_ffmpeg_available(),
+        "ffmpeg_available": _ffmpeg_checker.is_ffmpeg_available(),
         "gemini_configured": "GEMINI_API_KEY" in os.environ and os.environ["GEMINI_API_KEY"].strip() != ""
     }
 
