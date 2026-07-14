@@ -1087,7 +1087,8 @@
             theaterPlaceholder.style.display = "none";
             theaterVideo.style.display = "block";
             // Serve programmatically stitched mp4 or fallback seamlessly
-            theaterVideo.src = `${API_BASE}/api/assets/video?t=${new Date().getTime()}`;
+            const repoParam = data.analysis && data.analysis.repo_name ? `&repo_name=${encodeURIComponent(data.analysis.repo_name)}` : '';
+            theaterVideo.src = `${API_BASE}/api/assets/video?t=${new Date().getTime()}${repoParam}`;
             theaterVideo.play();
 
             // 3. Render Metaphor Grid
@@ -1111,7 +1112,10 @@
                 card.className = "storyboard-card";
                 
                 // Fallback to high-quality flowith images if not generated
-                const imgUrl = scene.image_url || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=600&auto=format&fit=crop";
+                let imgUrl = scene.image_url || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=600&auto=format&fit=crop";
+                if (scene.local_image_path) {
+                    imgUrl = `${API_BASE}/api/assets/image?path=${encodeURIComponent(scene.local_image_path)}`;
+                }
                 
                 card.innerHTML = `
                     <div class="storyboard-img-container">

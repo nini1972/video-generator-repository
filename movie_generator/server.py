@@ -62,20 +62,73 @@ def run_pipeline(req: RunPipelineRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/assets/video")
-def get_video():
+def get_video(repo_name: str = None):
     """
     Streams the stitched video if available.
     If not stitched, redirects to the premium pre-assembled Flowith movie URL.
     """
-    assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "assets"))
-    video_path = os.path.join(assets_dir, "final_movie.mp4")
+    base_assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "assets"))
+    video_path = None
     
-    if os.path.exists(video_path):
+    # Resolve repository-specific movie path if repo_name is provided
+    if repo_name:
+        repo_slug = "".join([c if c.isalnum() or c in "-_" else "_" for c in repo_name]).lower()
+        repo_slug = repo_slug.strip("_")
+        while "__" in repo_slug:
+            repo_slug = repo_slug.replace("__", "_")
+        video_path = os.path.join(base_assets_dir, "target_repos", repo_slug, "final_movie.mp4")
+    else:
+        video_path = os.path.join(base_assets_dir, "final_movie.mp4")
+    
+    # Dual Fallback: if specific movie path doesn't exist, search target_repos for the most recent final_movie.mp4
+    if not video_path or not os.path.exists(video_path):
+        target_repos_dir = os.path.join(base_assets_dir, "target_repos")
+        if os.path.isdir(target_repos_dir):
+            newest_movie = None
+            newest_mtime = 0
+            for root, dirs, files in os.walk(target_repos_dir):
+                if "final_movie.mp4" in files:
+                    candidate_path = os.path.join(root, "final_movie.mp4")
+                    try:
+                        mtime = os.path.getmtime(candidate_path)
+                        if mtime > newest_mtime:
+                            newest_mtime = mtime
+                            newest_movie = candidate_path
+                    except Exception:
+                        pass
+            if newest_movie:
+                video_path = newest_movie
+
+    if video_path and os.path.exists(video_path):
         return FileResponse(video_path, media_type="video/mp4")
     
     # Fallback to pre-assembled Master Movie URL directly from our successful Flowith run
     flowith_movie_url = "https://r2-bucket.flowith.net/concat_1779012993538996307.mp4"
     return RedirectResponse(url=flowith_movie_url)
+
+
+@app.get("/api/assets/image")
+def get_image(path: str):
+    """
+    Streams a localized storyboard keyframe image file to the live web dashboard.
+    Enforces strict path-traversal mitigation by validating requested absolute paths are
+    strictly situated within the project's subassets folder hierarchies.
+    """
+    base_assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "assets"))
+    resolved_path = os.path.abspath(path)
+    
+    # Security: Ensure absolute path falls inside the authorized assets root directory
+    if not resolved_path.startswith(base_assets_dir):
+        raise HTTPException(
+            status_code=403, 
+            detail="Forbidden: Path resolution violates active security policy sandboxes."
+        )
+        
+    if os.path.exists(resolved_path):
+        return FileResponse(resolved_path, media_type="image/png")
+        
+    raise HTTPException(status_code=404, detail="Requested keyframe is currently missing from storage.")
+
 
 if __name__ == "__main__":
     import uvicorn

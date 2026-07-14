@@ -1,5 +1,8 @@
 import os
 import json
+import subprocess
+import tempfile
+import shutil
 from typing import List
 from pydantic import BaseModel
 from google import genai
@@ -8,6 +11,11 @@ from movie_generator.agents.json_utils import robust_parse_json
 
 
 # ── Output schema — forces Gemini to produce well-formed JSON ─────────────────
+class AmbientProfile(BaseModel):
+    metaphor_theme: str         # e.g., "An ancient crystalline lighthouse routing ships through a dark storm"
+    suggested_vibe: str         # e.g., "Neon cyberpunk, moody lighting, desaturated industrial grays"
+    suggested_music_genre: str  # e.g., "High-energy Synthwave with heavy drum loops"
+
 class ArchitectureComponent(BaseModel):
     name: str
     purpose: str
@@ -17,11 +25,16 @@ class RepoAnalysisSchema(BaseModel):
     core_purpose: str
     architecture_components: List[ArchitectureComponent]
     technologies_used: List[str]
+    ambient: AmbientProfile
 
 
 class RepoInvestigator:
     def __init__(self, client: genai.Client = None):
-        self.client = client or (genai.Client() if os.environ.get("GEMINI_API_KEY") else None)
+        if client:
+            self.client = client
+        else:
+            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            self.client = genai.Client(api_key=api_key) if api_key else None
 
     def _get_mock_data(self) -> dict:
         """Returns the cached Hermes Agent analysis for demo/fallback use."""
@@ -46,17 +59,58 @@ class RepoInvestigator:
                     "purpose": "Decoupled from a single vendor, allowing direct connection to Portal, OpenRouter, Anthropic, or OpenAI."
                 }
             ],
-            "technologies_used": ["Python", "SQLite", "FTS5", "RPC", "Markdown Skills"]
+            "technologies_used": ["Python", "SQLite", "FTS5", "RPC", "Markdown Skills"],
+            "ambient": {
+                "metaphor_theme": "A weary crystalline floating core named Hermes tending to a digital greenhouse of glowing autonomous skills",
+                "suggested_vibe": "Moody solarpunk-meets-cyberpunk, bioluminescent light accents, amber and green highlights",
+                "suggested_music_genre": "Contemplative ambient electronic soundtrack, transitioning into a crescendo"
+            }
         }
+
+    def _clone_github_repo(self, url: str) -> str:
+        """
+        Clones a GitHub repository URL into a temporary directory and returns the path.
+        Raises RuntimeError if git is unavailable or the clone fails.
+        """
+        try:
+            subprocess.run(["git", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        except Exception:
+            raise RuntimeError("[RepoInvestigator] git is not installed or not on PATH. Cannot clone GitHub URL.")
+
+        tmp_dir = tempfile.mkdtemp(prefix="cinerepo_clone_")
+        try:
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", url, tmp_dir],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise RuntimeError(
+                    f"[RepoInvestigator] git clone failed for '{url}': "
+                    f"{result.stderr.decode('utf-8', errors='ignore').strip()}"
+                )
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise RuntimeError(f"[RepoInvestigator] git clone timed out for '{url}'.")
+        return tmp_dir
 
     def analyze(self, repo_path: str, mock_mode: bool = False) -> dict:
         """
-        Analyzes a repository directory, reading key codebase structures and READMEs.
+        Analyzes a repository directory or GitHub URL, reading key codebase structures and READMEs.
+        If a GitHub URL is provided it is cloned to a temp directory first.
         If mock_mode is True or GEMINI_API_KEY is missing, returns cached Hermes Agent analysis.
         Raises RuntimeError on analysis failure so callers can surface it to the user.
         """
         if mock_mode or not self.client:
             return self._get_mock_data()
+
+        # Auto-clone GitHub / remote URLs to a local temp dir
+        tmp_clone_dir = None
+        if repo_path.startswith("http://") or repo_path.startswith("https://"):
+            tmp_clone_dir = self._clone_github_repo(repo_path)
+            repo_path = tmp_clone_dir
 
         # Validate path early
         if not os.path.exists(repo_path):
@@ -120,12 +174,14 @@ class RepoInvestigator:
 
             codebase_context = "\n---\n".join(file_summaries)
             prompt = f"""
-            You are a senior software architect analyzing a codebase.
-            Based on the files below, extract:
-            1. The name of the project.
-            2. The core purpose of the project in one clear sentence.
-            3. The 3-4 most critical architecture components, databases, patterns, or tools and what they do.
-            4. The primary programming languages and technologies used.
+            You are a Senior Software Architect and a Creative Art Director working together.
+            Analyze this codebase and translate its architecture into a highly visual, metaphorical story for a short video showcase.
+
+            Step 1: Understand the tech. Name the project, its core purpose, critical modules, and languages used.
+            Step 2: Choose an Ambient Music and Art Direction profile (ambient):
+              - Choose a grand metaphorical sci-fi or fantasy theme represented by the repo (e.g., an automated crystalline lighthouse, a fluid memory ocean).
+              - Choose a matching visual style / vibe / color scheme (e.g. solarpunk-meets-cyberpunk, dark retro-futurism, desaturated moody industrial grays).
+              - Suggest a music genre matching this vibe and purpose (e.g., contemplative ambient synthesizer soundtrack, dark underground techno with heavy drum loops).
 
             Codebase context:
             {codebase_context}
@@ -134,7 +190,7 @@ class RepoInvestigator:
             """
 
             response = self.client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.5-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -152,7 +208,12 @@ class RepoInvestigator:
                         {"name": c.name, "purpose": c.purpose}
                         for c in parsed.architecture_components
                     ],
-                    "technologies_used": parsed.technologies_used
+                    "technologies_used": parsed.technologies_used,
+                    "ambient": {
+                        "metaphor_theme": parsed.ambient.metaphor_theme,
+                        "suggested_vibe": parsed.ambient.suggested_vibe,
+                        "suggested_music_genre": parsed.ambient.suggested_music_genre,
+                    }
                 }
 
             # Fallback: robust multi-stage text parser
@@ -162,3 +223,6 @@ class RepoInvestigator:
             raise  # Re-raise validation/path errors as-is
         except Exception as e:
             raise RuntimeError(f"[RepoInvestigator] Gemini analysis failed: {e}")
+        finally:
+            if tmp_clone_dir:
+                shutil.rmtree(tmp_clone_dir, ignore_errors=True)

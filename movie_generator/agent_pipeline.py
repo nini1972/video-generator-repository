@@ -16,6 +16,12 @@ class AgentPipeline:
         if gemini_api_key:
             os.environ["GEMINI_API_KEY"] = gemini_api_key
             os.environ["GOOGLE_API_KEY"] = gemini_api_key
+        else:
+            # Overwrite user's static system-wide GOOGLE_API_KEY if they set GEMINI_API_KEY in the shell environment.
+            # This prevents key masking where the SDK implicitly prefers a stale/free system-wide GOOGLE_API_KEY.
+            env_key = os.environ.get("GEMINI_API_KEY")
+            if env_key:
+                os.environ["GOOGLE_API_KEY"] = env_key
 
         self.investigator = RepoInvestigator()
         self.architect = NarrativeArchitect()
@@ -74,26 +80,39 @@ class AgentPipeline:
             pipeline_log.append("Stage 2 degraded to demo screenplay.")
             screenplay = self.architect.write_screenplay(analysis, mock_mode=True)
 
+        # Generate a slug from the repository name to namespace assets
+        repo_name = analysis.get("repo_name", "unknown_repo")
+        # Keep alphanumeric characters and convert spaces/slashes to underscores
+        repo_slug = "".join([c if c.isalnum() or c in "-_" else "_" for c in repo_name]).lower()
+        repo_slug = repo_slug.strip("_")
+        while "__" in repo_slug:
+            repo_slug = repo_slug.replace("__", "_")
+
         # ── Stage 3: Storyboard Prompting ──────────────────────────────────────
         pipeline_log.append("[STAGE 3] Launching StoryboardDirector Agent...")
         t2 = time.time()
         try:
-            storyboard = self.director.direct(screenplay, mock_mode=use_mock)
+            storyboard = self.director.direct(screenplay, mock_mode=use_mock, repo_slug=repo_slug)
             scene_count = len(storyboard.get("storyboards", []))
             pipeline_log.append(
                 f"StoryboardDirector completed in {time.time() - t2:.2f}s. "
-                f"Storyboard populated with {scene_count} scenes."
+                f"Storyboard populated with {scene_count} scenes (using namespace cache: '{repo_slug}')."
             )
         except RuntimeError as e:
             pipeline_log.append(f"[STAGE 3 ERROR] {e}")
             pipeline_log.append("Stage 3 degraded to demo storyboard.")
-            storyboard = self.director.direct(screenplay, mock_mode=True)
+            storyboard = self.director.direct(screenplay, mock_mode=True, repo_slug=None)
 
         # ── Stage 4: Movie Stitching & Assembly ────────────────────────────────
         pipeline_log.append("[STAGE 4] Launching ProductionStitcher & FFmpeg Engine...")
         t3 = time.time()
 
-        assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "assets"))
+        base_assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "assets"))
+        if repo_slug:
+            assets_dir = os.path.join(base_assets_dir, "target_repos", repo_slug)
+        else:
+            assets_dir = base_assets_dir
+            
         os.makedirs(assets_dir, exist_ok=True)
         movie_filepath = os.path.join(assets_dir, output_movie_filename)
 
@@ -109,7 +128,7 @@ class AgentPipeline:
             "master_concat_video_url": storyboard.get("master_concat_video_url")
         }
 
-        stitch_result = self.stitcher.stitch_movie(master_bundle, movie_filepath)
+        stitch_result = self.stitcher.stitch_movie(master_bundle, movie_filepath, repo_slug=repo_slug)
         pipeline_log.append(f"ProductionStitcher completed in {time.time() - t3:.2f}s.")
 
         for st_log in stitch_result.get("logs", []):

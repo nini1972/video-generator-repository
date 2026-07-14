@@ -1,19 +1,59 @@
 import os
 import json
+from typing import List
+from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 from movie_generator.agents.json_utils import robust_parse_json
 
 
+class Metaphor(BaseModel):
+    technical: str
+    narrative: str
+
+class Character(BaseModel):
+    name: str
+    description: str
+
+class DialogueLine(BaseModel):
+    speaker: str
+    text: str
+
+class Scene(BaseModel):
+    scene_number: int
+    title: str
+    setting: str
+    action: str
+    dialogue: List[DialogueLine]
+    visual_concept: str
+
+class ScreenplaySchema(BaseModel):
+    title: str
+    logline: str
+    suggested_music_genre: str = Field(
+        description="The musical genre that matches this repo's vibe, e.g., Cyberpunk Synthwave, Lofi Ambient, Industrial Orchestral"
+    )
+    metaphors: List[Metaphor]
+    characters: List[Character]
+    scenes: List[Scene] = Field(
+        description="Exactly 4 chronological scenes representing the story arc"
+    )
+
+
 class NarrativeArchitect:
     def __init__(self, client: genai.Client = None):
-        self.client = client or (genai.Client() if os.environ.get("GEMINI_API_KEY") else None)
+        if client:
+            self.client = client
+        else:
+            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            self.client = genai.Client(api_key=api_key) if api_key else None
 
     def _get_mock_screenplay(self) -> dict:
         """Returns the cached 'Gardener of Echoes' screenplay for demo/fallback use."""
         return {
             "title": "The Gardener of Echoes",
             "logline": "In a solitary research station, a weary systems engineer discovers that her digital assistant is a self-improving entity that transforms her past failures into a lush garden of autonomous skills.",
+            "suggested_music_genre": "Cinematic Cyber-Organic Ambient",
             "metaphors": [
                 {
                     "technical": "SQLite FTS5 & Persistent Memory",
@@ -93,6 +133,11 @@ class NarrativeArchitect:
             return self._get_mock_screenplay()
 
         try:
+            # Extract ambient creative recommendations from RepoInvestigator
+            ambient_info = repo_analysis.get("ambient", {})
+            metaphor_theme = ambient_info.get("metaphor_theme", "use a creative abstract space theme")
+            suggested_vibe = ambient_info.get("suggested_vibe", "cinematic sci-fi moody lighting")
+
             prompt = f"""
             You are a Hollywood screenwriter who specializes in high-concept science fiction allegories.
             Based on the technical repository analysis:
@@ -101,6 +146,10 @@ class NarrativeArchitect:
             Write a 4-scene screenplay that serves as a beautiful metaphor for this technical codebase.
             The screenplay must be SPECIFIC to this repository — use its actual project name, technologies,
             and architecture components as the basis for characters, settings, and narrative themes.
+
+            IMPORTANT CREATIVE DIRECTION (Ambient-Creative Bridge):
+            - Metaphorical Theme to follow: {metaphor_theme}
+            - Visual style/atmosphere/vibe to inject: {suggested_vibe}
 
             Follow this structure:
             Scene 1: Introduction of a problem representing the main pain point solved by the repo (Entropy/Struggle).
@@ -123,12 +172,43 @@ class NarrativeArchitect:
             """
 
             response = self.client.models.generate_content(
-                model='gemini-2.5-pro',  # Pro for richer, more creative writing
+                model='gemini-3.5-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
+                    response_schema=ScreenplaySchema,
                 ),
             )
+            # Prefer the SDK's parsed object when available (response_schema path)
+            if hasattr(response, 'parsed') and response.parsed is not None:
+                parsed = response.parsed
+                return {
+                    "title": parsed.title,
+                    "logline": parsed.logline,
+                    "metaphors": [
+                        {"technical": m.technical, "narrative": m.narrative}
+                        for m in parsed.metaphors
+                    ],
+                    "characters": [
+                        {"name": c.name, "description": c.description}
+                        for c in parsed.characters
+                    ],
+                    "scenes": [
+                        {
+                            "scene_number": s.scene_number,
+                            "title": s.title,
+                            "setting": s.setting,
+                            "action": s.action,
+                            "dialogue": [
+                                {"speaker": d.speaker, "text": d.text}
+                                for d in s.dialogue
+                            ],
+                            "visual_concept": s.visual_concept,
+                        }
+                        for s in parsed.scenes
+                    ],
+                }
+
             return robust_parse_json(response.text)
 
         except Exception as e:

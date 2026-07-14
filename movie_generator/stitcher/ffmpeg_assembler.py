@@ -1,11 +1,84 @@
 import os
+import shutil
 import subprocess
 import requests
 import tempfile
 
+
+def _locate_ffmpeg() -> str:
+    """
+    Locates the ffmpeg executable even when the server process inherited a
+    stale PATH (e.g. started before a winget install updated PATH).
+
+    Search order:
+      1. shutil.which() against the current process PATH
+      2. Re-read PATH from the Windows registry (system + user) and search again
+      3. Known winget / Chocolatey / common install locations
+    """
+    # 1. Fast path — already on current PATH
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+
+    # 2. Read live PATH from Windows registry so we work even if PATH is stale
+    try:
+        import winreg
+        paths = []
+        for hive, subkey in [
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+            (winreg.HKEY_CURRENT_USER, r"Environment"),
+        ]:
+            try:
+                with winreg.OpenKey(hive, subkey) as key:
+                    val, _ = winreg.QueryValueEx(key, "Path")
+                    paths.append(val)
+            except FileNotFoundError:
+                pass
+        combined = os.pathsep.join(paths)
+        found = shutil.which("ffmpeg", path=combined)
+        if found:
+            return found
+        # Also walk the directories manually for ffmpeg.exe
+        for directory in combined.split(os.pathsep):
+            candidate = os.path.join(directory.strip(), "ffmpeg.exe")
+            if os.path.isfile(candidate):
+                return candidate
+    except Exception:
+        pass
+
+    # 3. Hardcoded fallback paths (winget, Chocolatey, Scoop, system)
+    fallbacks = [
+        # winget Gyan.FFmpeg pattern (version-agnostic glob not possible, check known)
+        os.path.expandvars(
+            r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe"
+        ),
+        r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
+        r"C:\tools\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+        os.path.expanduser(r"~\scoop\apps\ffmpeg\current\bin\ffmpeg.exe"),
+    ]
+    for path in fallbacks:
+        if os.path.isdir(path):
+            # Walk one level into winget package dir to find versioned sub-folder
+            try:
+                for entry in os.scandir(path):
+                    candidate = os.path.join(entry.path, "bin", "ffmpeg.exe")
+                    if os.path.isfile(candidate):
+                        return candidate
+            except Exception:
+                pass
+        elif os.path.isfile(path):
+            return path
+
+    return "ffmpeg"  # last resort — let subprocess raise the error naturally
+
+
 class FFmpegAssembler:
     def __init__(self, ffmpeg_path: str = "ffmpeg"):
-        self.ffmpeg_path = ffmpeg_path
+        # Auto-locate ffmpeg if only the bare name was supplied
+        self.ffmpeg_path = _locate_ffmpeg() if ffmpeg_path == "ffmpeg" else ffmpeg_path
 
     def is_ffmpeg_available(self) -> bool:
         try:
@@ -27,7 +100,63 @@ class FFmpegAssembler:
             print(f"Failed to download {url}: {e}")
         return False
 
-    def stitch_movie(self, storyboard: dict, output_filepath: str) -> dict:
+    def _create_ken_burns_clip(
+        self, image_path: str, duration: float, output_path: str
+    ) -> bool:
+        """
+        Renders a slow zoom-in (Ken Burns) video clip from a still image.
+        Output: 1920x1080, libx264, 25 fps, yuv420p.
+        """
+        frames = max(1, int(duration * 25))
+        zoom_filter = (
+            "scale=3840:-1,"
+            f"zoompan=z='min(zoom+0.0008,1.5)':"
+            "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+            f"d={frames}:fps=25:s=1920x1080"
+        )
+        cmd = [
+            self.ffmpeg_path, "-y",
+            "-loop", "1", "-framerate", "25",
+            "-i", image_path,
+            "-vf", zoom_filter,
+            "-c:v", "libx264",
+            "-t", str(duration),
+            "-pix_fmt", "yuv420p",
+            output_path,
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=180)
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _concatenate_video_clips(
+        self, clip_paths: list, output_path: str
+    ) -> bool:
+        """Concatenates a list of .mp4 clips into a single file."""
+        concat_list = output_path + ".concat_list.txt"
+        try:
+            with open(concat_list, "w", encoding="utf-8") as f:
+                for p in clip_paths:
+                    # ffmpeg concat demuxer requires forward slashes
+                    safe_p = p.replace("\\", "/")
+                    f.write(f"file '{safe_p}'\n")
+            cmd = [
+                self.ffmpeg_path, "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", concat_list,
+                "-c", "copy",
+                output_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=300)
+            return result.returncode == 0
+        except Exception:
+            return False
+        finally:
+            if os.path.exists(concat_list):
+                os.unlink(concat_list)
+
+    def stitch_movie(self, storyboard: dict, output_filepath: str, repo_slug: str = None) -> dict:
         """
         Processes individual storyboard segments, downloads resources,
         and mixes audio tracks (voiceover + background music at -18dB) with video,
@@ -46,7 +175,12 @@ class FFmpegAssembler:
         concat_video_url = storyboard.get("master_concat_video_url")
         
         # Set up working directory inside project root to store outputs cleanly
-        assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets"))
+        base_assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets"))
+        if repo_slug:
+            assets_dir = os.path.join(base_assets_dir, "target_repos", repo_slug)
+        else:
+            assets_dir = base_assets_dir
+            
         os.makedirs(assets_dir, exist_ok=True)
         
         local_music = os.path.join(assets_dir, "music.mp3")
@@ -77,6 +211,55 @@ class FFmpegAssembler:
                 logs.append(f"Master video reels download status: {'SUCCESS' if success else 'FAILED'}")
             else:
                 logs.append("Master video reels already cached locally.")
+
+        # ── Ken Burns path: build video from AI-generated scene images ─────────
+        scenes = storyboard.get("scenes", []) or storyboard.get("storyboards", [])
+        images_ready = [
+            s for s in scenes
+            if s.get("local_image_path") and os.path.exists(s["local_image_path"])
+        ]
+        if ffmpeg_ok and len(images_ready) == len(scenes) and len(scenes) > 0:
+            logs.append(
+                f"Building personalised Ken Burns video from {len(scenes)} generated images..."
+            )
+            clip_paths = []
+            all_clips_ok = True
+            for scene in scenes:
+                img_file = scene["local_image_path"]
+                img_name = os.path.splitext(os.path.basename(img_file))[0]
+                clip_out = os.path.join(
+                    assets_dir, f"{img_name}_clip.mp4"
+                )
+                
+                if os.path.exists(clip_out):
+                    logs.append(f"  Using cached scene {scene.get('scene_number')} clip: {clip_out}")
+                    clip_paths.append(clip_out)
+                    continue
+
+                logs.append(f"  Rendering scene {scene.get('scene_number')} clip...")
+                ok = self._create_ken_burns_clip(
+                    img_file,
+                    scene.get("duration_seconds", 8.0),
+                    clip_out,
+                )
+                if ok:
+                    clip_paths.append(clip_out)
+                else:
+                    logs.append(
+                        f"  Scene {scene.get('scene_number')} clip failed — "
+                        "falling back to cached video."
+                    )
+                    all_clips_ok = False
+                    break
+
+            if all_clips_ok:
+                kb_concat = os.path.join(assets_dir, "ken_burns_concat.mp4")
+                if self._concatenate_video_clips(clip_paths, kb_concat):
+                    local_concat_video = kb_concat
+                    logs.append("Ken Burns personalised video assembled successfully!")
+                else:
+                    logs.append("Concatenation failed — falling back to cached video.")
+        # ──────────────────────────────────────────────────────────────────────
 
         # 4. Synthesize FFmpeg Command
         # This mixes narration (input 1) and background music (input 2, volume lowered by -18dB to ensure crisp dialog)
