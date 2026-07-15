@@ -3,11 +3,13 @@ import json
 import base64
 import hashlib
 from typing import List
-from concurrent.futures import ThreadPoolExecutor  # <-- Parallel speed boost!
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from movie_generator.agents.json_utils import robust_parse_json
+from movie_generator.audio.speech_synthesiser import SpeechSynthesiser
+from movie_generator.audio.music_generator import MusicGenerator
 
 
 class _StoryboardScene(BaseModel):
@@ -16,10 +18,18 @@ class _StoryboardScene(BaseModel):
     duration_seconds: float
     visual_prompt: str
     narration_text: str
+    creative_rationale: str  # Director's self-reflection: why these symbols were chosen
+
+
+class _AudioDirection(BaseModel):
+    soundtrack_mode: str  # Options: "instrumental_only", "with_lyrics", "no_music"
+    speech_mode: str      # Options: "full_narration", "prologue_epilogue_only", "no_speech"
+    soundtrack_style: str  # Description of desired artistic style, e.g. "somber synth with human operatic lyrics"
 
 
 class _StoryboardSchema(BaseModel):
     aesthetic_style: str
+    audio_direction: _AudioDirection
     storyboards: List[_StoryboardScene]
 
 # Fallback audio/video URLs from the Flowith demo run.
@@ -37,46 +47,59 @@ class StoryboardDirector:
             api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
             self.client = genai.Client(api_key=api_key) if api_key else None
 
-    def _get_mock_storyboard(self) -> dict:
+        # Audio generation agents — share the same client/API key
+        self.speech_synth = SpeechSynthesiser(client=self.client)
+        self.music_gen = MusicGenerator(client=self.client)
+
+    def _get_mock_storyboard(self, soundtrack_pref: str = "auto", speech_pref: str = "auto") -> dict:
         """Returns the cached Flowith storyboard with exact asset URLs for demo/fallback use."""
         return {
             "aesthetic_style": "Cyber-Organic, Solarpunk-meets-Cyberpunk, moody bioluminescent lighting, gold and amber highlights, cinematic widescreen 16:9, hyper-realistic details",
+            "audio_direction": {
+                "soundtrack_mode": "instrumental_only" if soundtrack_pref == "auto" else soundtrack_pref,
+                "speech_mode": "full_narration" if speech_pref == "auto" else speech_pref,
+                "soundtrack_style": "Contemplative ambient electronic soundtrack, transitioning into a crescendo"
+            },
             "storyboards": [
                 {
                     "scene_number": 1,
                     "title": "Scene 1: The Silent Archive",
                     "duration_seconds": 8.0,
-                    "visual_prompt": "Weary engineer Elara stands in a dark repair bay filled with shimmering Echo-Engines as a crystalline floating core named Hermes appears casting an amber glow, cinematic sci-fi moody lighting bioluminescent aesthetics high-tech organic textures solarpunk-meets-cyberpunk 16:9 aspect ratio, slow zoom on her exhausted face to the glowing core",
+                    "visual_prompt": "Wide establishing shot of a weary engineer in a dark repair bay filled with silent Echo-Engines, a crystalline floating core casts amber glow. Dramatic rim lighting, volumetric fog, bioluminescent accents. Cinematic 16:9, photorealistic, solarpunk-meets-cyberpunk. No text or UI.",
                     "image_url": "https://r2-bucket.flowith.net/f/81d85c63c5c115db/silent_archive_digital_library_index_0.jpeg",
                     "video_url": "https://vg.flowith.net/tencent/1412218316-AigcVideoTask-1ce1c70bd45a69f4b4fce9bcd7be60a6t.mp4",
-                    "narration_text": "In the cold corners of the repair bay, memory fades like steam. Elara sits amid a graveyard of silent engines, struggling to remember the vital patterns she solved years before. But she is not alone."
+                    "narration_text": "In the cold corners of the repair bay, memory fades like steam. She is not alone.",
+                    "creative_rationale": "The dark, cluttered repair bay represents a codebase without persistent memory — past solutions lost. The crystalline core (Hermes) is the SQLite FTS5 system, glowing amber like stored knowledge waiting to be recalled."
                 },
                 {
                     "scene_number": 2,
                     "title": "Scene 2: Tending the Seeds",
                     "duration_seconds": 10.0,
-                    "visual_prompt": "At night Elara sleeps peacefully while Hermes pulses with light and holographic roots grow from the floor terminal forming a glowing document called FILAMENT_RECOVERY in the air, time-lapse effect of the roots spreading, cinematic sci-fi moody lighting bioluminescent aesthetics high-tech organic textures solarpunk-meets-cyberpunk 16:9 aspect ratio",
+                    "visual_prompt": "Close-up of holographic root tendrils growing from a floor terminal, forming a glowing parchment document in mid-air. Golden hour backlight through station windows. Bioluminescent organic textures, particle effects. Cinematic 16:9, photorealistic. No text or UI.",
                     "image_url": "https://r2-bucket.flowith.net/f/34f6e6adeb92c89c/gardener_synthesis_neon_seed_index_1.jpeg",
                     "video_url": "https://vg.flowith.net/tencent/1412218316-AigcVideoTask-30a5dae27c3c3bfa04458479f2cb7d03t.mp4",
-                    "narration_text": "While she rests, Hermes begins its quiet work. Deep, luminous roots of persistent memory extend into the bay, turning the dry soil of yesterday's failures into fresh, autonomous skill documents."
+                    "narration_text": "While she rests, luminous roots of memory extend into the bay. Yesterday's failures become tomorrow's autonomous skills.",
+                    "creative_rationale": "The root tendrils represent FTS5 search indexes spreading through data. The self-writing parchment is agentskills.io autonomously generating skill documents from observed patterns — knowledge growing organically without human intervention."
                 },
                 {
                     "scene_number": 3,
                     "title": "Scene 3: Splitting the Core",
                     "duration_seconds": 9.0,
-                    "visual_prompt": "Crisis unfolds with red lights flashing and coolant spraying as Hermes core splits into four smaller geometric shards that fly to different stations performing multiple tasks simultaneously, dynamic wide shot, cinematic sci-fi moody lighting bioluminescent aesthetics high-tech organic textures solarpunk-meets-cyberpunk 16:9 aspect ratio",
+                    "visual_prompt": "Dynamic wide shot of a crystalline core splitting into four geometric shards flying to different stations. Red emergency lighting, coolant spray, lens flare. High energy, motion blur. Cinematic 16:9, photorealistic, solarpunk-meets-cyberpunk. No text or UI.",
                     "image_url": "https://r2-bucket.flowith.net/f/bb6c653e88a926d4/hermes_agent_holographic_interface_index_1.jpeg",
                     "video_url": "https://vg.flowith.net/tencent/1412218316-AigcVideoTask-d6865d18738546a6d8645a9befe49982t.mp4",
-                    "narration_text": "When crisis strikes and the bay fractures, there is no panic. With speed born of parallel execution, the core divides, handling alarms, coolants, and code in perfect synchronicity."
+                    "narration_text": "When crisis strikes, there is no panic. The core divides — handling alarms, coolants, and code in perfect synchronicity.",
+                    "creative_rationale": "The shard-splitting visualises RPC parallel sub-agent delegation — one coordinator spawning independent workers. Four shards for four simultaneous tasks mirrors the ThreadPoolExecutor pattern in the actual code."
                 },
                 {
                     "scene_number": 4,
                     "title": "Scene 4: The Digital Garden",
                     "duration_seconds": 12.0,
-                    "visual_prompt": "Peaceful resolution shows the bay transformed into a lush digital garden of glowing holographic vines and fruit where Elara and Hermes look out a viewport at a nebula, slow pull-back into wide cinematic shot of the station as part of a celestial landscape, cinematic sci-fi moody lighting bioluminescent aesthetics high-tech organic textures solarpunk-meets-cyberpunk 16:9 aspect ratio",
+                    "visual_prompt": "Epic wide pull-back shot of a living mechanical greenhouse with holographic vines bearing fruit-like skill icons. Two figures gaze at a stellar nebula through a viewport. Volumetric atmosphere, warm amber and green palette. Cinematic 16:9, photorealistic. No text or UI.",
                     "image_url": "https://r2-bucket.flowith.net/f/3f5c3e5396a695fe/digital_forest_bloom_scene_index_2.jpeg",
                     "video_url": "https://vg.flowith.net/tencent/1412218316-AigcVideoTask-e00438f240db580a5839a2df59cf2b1et.mp4",
-                    "narration_text": "Morning brings a living sanctuary. The mechanical graveyard has blossomed into a self-improving garden. The tool has become a partner, and together, they look toward a new horizon of endless growth."
+                    "narration_text": "Morning brings a living sanctuary. The tool has become a partner — together, they grow.",
+                    "creative_rationale": "The greenhouse ecosystem represents Hermes's multi-model, vendor-agnostic philosophy — diverse species (providers) thriving together. The fruit-icons are mature, reusable skills. Human and machine gazing outward symbolises neutral-alignment partnership."
                 }
             ],
             "master_music_url": _FALLBACK_MUSIC_URL,
@@ -152,34 +175,93 @@ class StoryboardDirector:
                 future.result()  # Wait for all images to complete
         return scenes
 
-    def direct(self, screenplay: dict, mock_mode: bool = False, repo_slug: str = None) -> dict:
+    def direct(self, creative_brief: dict, mock_mode: bool = False, repo_slug: str = None, soundtrack_pref: str = "auto", speech_pref: str = "auto") -> dict:
         """
-        Creates a storyboard detailing scene visuals, precise timings, and narrations.
+        Creates a storyboard from a creative brief, with self-reflection.
+        The Director must justify every visual choice via creative_rationale.
         If mock_mode is True or GEMINI_API_KEY is missing, returns the cached Flowith storyboard.
         Raises RuntimeError on generation failure so callers can surface it to the user.
         """
         if mock_mode or not self.client:
-            return self._get_mock_storyboard()
+            return self._get_mock_storyboard(soundtrack_pref=soundtrack_pref, speech_pref=speech_pref)
+
+        pref_instructions = []
+        if soundtrack_pref != "auto":
+            pref_instructions.append(f"- USER CONSTRAINT on soundtrack_mode: You MUST output '{soundtrack_pref}' as the soundtrack_mode in audio_direction.")
+        if speech_pref != "auto":
+            pref_instructions.append(f"- USER CONSTRAINT on speech_mode: You MUST output '{speech_pref}' as the speech_mode in audio_direction.")
+        
+        pref_prompt_str = "\n".join(pref_instructions) if pref_instructions else ""
+
+        # Build the symbol map reference for the prompt
+        symbol_map = creative_brief.get("symbol_map", [])
+        symbol_ref = "\n".join([
+            f"  - {s['technical']} → {s['symbol']} (because: {s['why']})"
+            for s in symbol_map
+        ])
+
+        # Build the scene arc seeds
+        scene_arc = creative_brief.get("scene_arc", {})
+        arc_ref = "\n".join([
+            f"  Scene {i}: {scene_arc.get(f'scene_{i}_seed', 'No seed provided')}"
+            for i in range(1, 5)
+        ])
 
         try:
             prompt = f"""
-            You are a senior cinematic creative director.
-            Based on the screenplay:
-            {json.dumps(screenplay, indent=2)}
+            You are the DIRECTOR — the final creative authority on this cinematic short film.
+            You have received a creative brief from the PromptArchitect. Your job is to
+            transform it into a production-ready storyboard with precise visual directives,
+            timing, narration, and audio configuration.
 
-            Synthesize detailed visual directives and timing scripts for each of the 4 scenes.
-            The visuals MUST be specific to the story in the screenplay provided — do not use generic imagery.
-            Ensure the styling guidelines are rich and descriptive.
-            Generate highly vivid prompts optimized for text-to-image and text-to-video diffusion models (e.g. Imagen 3).
+            CREATIVE BRIEF:
+            Title: {creative_brief.get('title', 'Untitled')}
+            Logline: {creative_brief.get('logline', '')}
+            Tone: {creative_brief.get('tone', '')}
+            Visual Anchors: {creative_brief.get('visual_anchors', '')}
+            Music Direction: {creative_brief.get('music_direction', '')}
+            Narration Voice: {creative_brief.get('narration_voice', '')}
 
-            Return your response as a strict JSON object with these keys:
-            - aesthetic_style: string (mood, color, lighting, framing, lens, atmosphere)
-            - storyboards: array of 4 objects with keys:
-              - scene_number: integer (1-4)
-              - title: string
-              - duration_seconds: float (recommend between 6.0 and 12.0 seconds)
-              - visual_prompt: string (ultra-detailed keyframe generation prompt)
-              - narration_text: string (narrator's voiceover for this specific scene)
+            SYMBOL MAP — You MUST use these visual symbols in your scenes:
+{symbol_ref}
+
+            SCENE ARC SEEDS — Develop each scene from these starting points:
+{arc_ref}
+
+            YOUR DIRECTIVES:
+
+            1. VISUAL PROMPTS — For each scene, write an ultra-detailed prompt optimized
+               for text-to-image diffusion models (Imagen 3). Follow this structure:
+               - Start with shot type: "Wide establishing shot", "Close-up", "Macro detail"
+               - Include lighting: "dramatic rim lighting", "golden hour backlight"
+               - Include atmosphere: "volumetric fog", "particle effects", "lens flare"
+               - End with style anchors: "cinematic, 16:9 aspect ratio, photorealistic"
+               - MUST include the visual symbols from the symbol map above
+               - Do NOT include text, UI, typography, or watermarks in the image
+
+            2. NARRATION — Write a voiceover for each scene:
+               - CRITICAL LENGTH RULE: 2-3 short sentences maximum (under 250 characters)
+               - Must fit within the scene's duration_seconds at ~2.5 words/second
+               - Write as a documentary narrator — poetic, measured, awed
+               - Do NOT repeat the symbol map descriptions — describe what the VIEWER sees and feels
+
+            3. CREATIVE RATIONALE — For each scene, explain WHY you chose these visuals.
+               This is your self-reflection as Director. Connect each visual choice back to
+               a specific technical component from the symbol map. This proves the video
+               genuinely represents the underlying codebase.
+
+            4. AUDIO DIRECTION:
+               - soundtrack_mode: 'instrumental_only', 'with_lyrics', or 'no_music'
+               - speech_mode: 'full_narration', 'prologue_epilogue_only', or 'no_speech'
+               - soundtrack_style: refine the music direction from the brief: "{creative_brief.get('music_direction', '')}"
+
+            {pref_prompt_str}
+
+            Return a strict JSON object with keys:
+            - aesthetic_style: string
+            - audio_direction: object (soundtrack_mode, speech_mode, soundtrack_style)
+            - storyboards: array of 4 objects (scene_number, title, duration_seconds,
+              visual_prompt, narration_text, creative_rationale)
             """
 
             response = self.client.models.generate_content(
@@ -195,6 +277,11 @@ class StoryboardDirector:
                 parsed = response.parsed
                 result = {
                     "aesthetic_style": parsed.aesthetic_style,
+                    "audio_direction": {
+                        "soundtrack_mode": parsed.audio_direction.soundtrack_mode,
+                        "speech_mode": parsed.audio_direction.speech_mode,
+                        "soundtrack_style": parsed.audio_direction.soundtrack_style,
+                    },
                     "storyboards": [
                         {
                             "scene_number": s.scene_number,
@@ -202,6 +289,7 @@ class StoryboardDirector:
                             "duration_seconds": s.duration_seconds,
                             "visual_prompt": s.visual_prompt,
                             "narration_text": s.narration_text,
+                            "creative_rationale": s.creative_rationale,
                         }
                         for s in parsed.storyboards
                     ],
@@ -209,7 +297,7 @@ class StoryboardDirector:
             else:
                 result = robust_parse_json(response.text)
 
-            # Generate personalized scene images from each visual_prompt
+            # ── Resolve assets directory ──────────────────────────────────────────
             base_assets_dir = os.path.abspath(
                 os.path.join(os.path.dirname(__file__), "..", "assets")
             )
@@ -219,14 +307,49 @@ class StoryboardDirector:
                 assets_dir = base_assets_dir
                 
             os.makedirs(assets_dir, exist_ok=True)
-            result["storyboards"] = self._generate_scene_images(
-                result["storyboards"], result["aesthetic_style"], assets_dir
+
+            # ── Extract audio direction for generation ────────────────────────────
+            audio_dir = result.get("audio_direction", {})
+            active_speech_mode = audio_dir.get("speech_mode", "full_narration")
+            active_soundtrack_mode = audio_dir.get("soundtrack_mode", "instrumental_only")
+            active_soundtrack_style = audio_dir.get("soundtrack_style", "cinematic ambient")
+
+            # Compute total duration for the music generator
+            total_duration = sum(
+                s.get("duration_seconds", 8.0) for s in result["storyboards"]
             )
 
-            # Inject audio/video fallbacks until real TTS and music generation is wired in.
-            # These allow the video player to function even without an FFmpeg-assembled output.
-            result.setdefault("master_music_url", _FALLBACK_MUSIC_URL)
-            result.setdefault("master_speech_url", _FALLBACK_SPEECH_URL)
+            # Pull music direction from the creative brief
+            suggested_genre = creative_brief.get("music_direction", "Cinematic Ambient")
+
+            # ── Run image, speech, and music generation in parallel ───────────────
+            print("[StoryboardDirector] Launching parallel asset generation (images + speech + music)...")
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                future_images = pool.submit(
+                    self._generate_scene_images,
+                    result["storyboards"], result["aesthetic_style"], assets_dir
+                )
+                future_speech = pool.submit(
+                    self.speech_synth.synthesise_all_scenes,
+                    result["storyboards"], assets_dir,
+                    speech_mode=active_speech_mode
+                )
+                future_music = pool.submit(
+                    self.music_gen.generate_soundtrack,
+                    active_soundtrack_style, suggested_genre,
+                    active_soundtrack_mode, total_duration, assets_dir
+                )
+
+                # Collect results — images and speech modify scenes in-place
+                result["storyboards"] = future_images.result()
+                future_speech.result()  # scenes updated in-place with local_speech_path
+                local_music_path = future_music.result()
+
+            # Store the local music path for the pipeline's AudioMixer
+            result["local_music_path"] = local_music_path
+
+            # Inject remote video fallback for the web player (images are local)
             result.setdefault("master_concat_video_url", _FALLBACK_VIDEO_URL)
 
             return result

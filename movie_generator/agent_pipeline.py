@@ -2,8 +2,9 @@ import os
 import json
 import time
 from movie_generator.agents.repo_investigator import RepoInvestigator
-from movie_generator.agents.narrative_architect import NarrativeArchitect
+from movie_generator.agents.prompt_architect import PromptArchitect
 from movie_generator.agents.storyboard_director import StoryboardDirector
+from movie_generator.audio.mixer import AudioMixer
 from movie_generator.stitcher.ffmpeg_assembler import FFmpegAssembler
 
 
@@ -24,14 +25,15 @@ class AgentPipeline:
                 os.environ["GOOGLE_API_KEY"] = env_key
 
         self.investigator = RepoInvestigator()
-        self.architect = NarrativeArchitect()
+        self.prompt_architect = PromptArchitect()
         self.director = StoryboardDirector()
+        self.mixer = AudioMixer()
         self.stitcher = FFmpegAssembler(ffmpeg_path=ffmpeg_path)
 
-    def run(self, repo_path: str, output_movie_filename: str = "master_movie.mp4", force_mock: bool = False) -> dict:
+    def run(self, repo_path: str, output_movie_filename: str = "master_movie.mp4", force_mock: bool = False, soundtrack_pref: str = "auto", speech_pref: str = "auto") -> dict:
         """
         Runs the complete end-to-end movie generation agent workflow:
-        RepoInvestigator -> NarrativeArchitect -> StoryboardDirector -> FFmpegAssembler.
+        RepoInvestigator -> PromptArchitect -> StoryboardDirector -> FFmpegAssembler.
 
         Errors from each stage are caught, logged to pipeline_logs, and the stage
         gracefully degrades to demo data so the UI always receives a usable result.
@@ -66,19 +68,20 @@ class AgentPipeline:
             pipeline_log.append("Stage 1 degraded to demo data — fix the error above to enable real analysis.")
             analysis = self.investigator.analyze(repo_path, mock_mode=True)
 
-        # ── Stage 2: Screenplay Generation ────────────────────────────────────
-        pipeline_log.append("[STAGE 2] Launching NarrativeArchitect Agent...")
+        # ── Stage 2: Creative Brief Generation ─────────────────────────────────
+        pipeline_log.append("[STAGE 2] Launching PromptArchitect Agent...")
         t1 = time.time()
         try:
-            screenplay = self.architect.write_screenplay(analysis, mock_mode=use_mock)
+            creative_brief = self.prompt_architect.craft_brief(analysis, mock_mode=use_mock)
+            symbol_count = len(creative_brief.get("symbol_map", []))
             pipeline_log.append(
-                f"NarrativeArchitect completed in {time.time() - t1:.2f}s. "
-                f"Screenplay: '{screenplay.get('title', 'Untitled')}'"
+                f"PromptArchitect completed in {time.time() - t1:.2f}s. "
+                f"Brief: '{creative_brief.get('title', 'Untitled')}' ({symbol_count} symbols mapped)."
             )
         except RuntimeError as e:
             pipeline_log.append(f"[STAGE 2 ERROR] {e}")
-            pipeline_log.append("Stage 2 degraded to demo screenplay.")
-            screenplay = self.architect.write_screenplay(analysis, mock_mode=True)
+            pipeline_log.append("Stage 2 degraded to demo creative brief.")
+            creative_brief = self.prompt_architect.craft_brief(analysis, mock_mode=True)
 
         # Generate a slug from the repository name to namespace assets
         repo_name = analysis.get("repo_name", "unknown_repo")
@@ -92,7 +95,13 @@ class AgentPipeline:
         pipeline_log.append("[STAGE 3] Launching StoryboardDirector Agent...")
         t2 = time.time()
         try:
-            storyboard = self.director.direct(screenplay, mock_mode=use_mock, repo_slug=repo_slug)
+            storyboard = self.director.direct(
+                creative_brief, 
+                mock_mode=use_mock, 
+                repo_slug=repo_slug,
+                soundtrack_pref=soundtrack_pref,
+                speech_pref=speech_pref
+            )
             scene_count = len(storyboard.get("storyboards", []))
             pipeline_log.append(
                 f"StoryboardDirector completed in {time.time() - t2:.2f}s. "
@@ -101,11 +110,17 @@ class AgentPipeline:
         except RuntimeError as e:
             pipeline_log.append(f"[STAGE 3 ERROR] {e}")
             pipeline_log.append("Stage 3 degraded to demo storyboard.")
-            storyboard = self.director.direct(screenplay, mock_mode=True, repo_slug=None)
+            storyboard = self.director.direct(
+                creative_brief, 
+                mock_mode=True, 
+                repo_slug=None,
+                soundtrack_pref=soundtrack_pref,
+                speech_pref=speech_pref
+            )
 
-        # ── Stage 4: Movie Stitching & Assembly ────────────────────────────────
-        pipeline_log.append("[STAGE 4] Launching ProductionStitcher & FFmpeg Engine...")
-        t3 = time.time()
+        # ── Stage 3.5: Audio Mixing ────────────────────────────────────────────
+        pipeline_log.append("[STAGE 3.5] Launching AudioMixer...")
+        t_mix = time.time()
 
         base_assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "assets"))
         if repo_slug:
@@ -116,16 +131,44 @@ class AgentPipeline:
         os.makedirs(assets_dir, exist_ok=True)
         movie_filepath = os.path.join(assets_dir, output_movie_filename)
 
+        scenes = storyboard.get("storyboards", [])
+        audio_dir_opts = storyboard.get("audio_direction", {}) or {}
+        speech_mode = audio_dir_opts.get("speech_mode", "full_narration")
+        soundtrack_mode = audio_dir_opts.get("soundtrack_mode", "instrumental_only")
+
+        scene_speech_paths = [s.get("local_speech_path") for s in scenes]
+        scene_durations = [s.get("duration_seconds", 8.0) for s in scenes]
+        local_music_path = storyboard.get("local_music_path")
+
+        local_mixed_audio_path = self.mixer.mix_master_audio(
+            scene_speech_paths=scene_speech_paths,
+            scene_durations=scene_durations,
+            soundtrack_path=local_music_path,
+            speech_mode=speech_mode,
+            soundtrack_mode=soundtrack_mode,
+            output_dir=assets_dir,
+        )
+        pipeline_log.append(f"AudioMixer completed in {time.time() - t_mix:.2f}s.")
+        if local_mixed_audio_path:
+            pipeline_log.append(f"  Master audio: {os.path.basename(local_mixed_audio_path)}")
+        else:
+            pipeline_log.append("  No mixed audio produced (silent mode or generation skipped).")
+
+        # ── Stage 4: Movie Stitching & Assembly ────────────────────────────────
+        pipeline_log.append("[STAGE 4] Launching ProductionStitcher & FFmpeg Engine...")
+        t3 = time.time()
+
         master_bundle = {
-            "title": screenplay.get("title", "Untitled Allegory"),
-            "logline": screenplay.get("logline"),
-            "metaphors": screenplay.get("metaphors", []),
-            "characters": screenplay.get("characters", []),
+            "title": creative_brief.get("title", "Untitled Allegory"),
+            "logline": creative_brief.get("logline"),
+            "symbol_map": creative_brief.get("symbol_map", []),
             "aesthetic_style": storyboard.get("aesthetic_style"),
+            "audio_direction": storyboard.get("audio_direction"),
             "scenes": storyboard.get("storyboards", []),
             "master_music_url": storyboard.get("master_music_url"),
             "master_speech_url": storyboard.get("master_speech_url"),
-            "master_concat_video_url": storyboard.get("master_concat_video_url")
+            "master_concat_video_url": storyboard.get("master_concat_video_url"),
+            "local_mixed_audio_path": local_mixed_audio_path,
         }
 
         stitch_result = self.stitcher.stitch_movie(master_bundle, movie_filepath, repo_slug=repo_slug)
@@ -139,7 +182,7 @@ class AgentPipeline:
             "success": True,
             "pipeline_logs": pipeline_log,
             "analysis": analysis,
-            "screenplay": screenplay,
+            "creative_brief": creative_brief,
             "storyboard": storyboard,
             "stitch_result": {
                 "success": stitch_result.get("success"),

@@ -33,6 +33,9 @@ class ScreenplaySchema(BaseModel):
     suggested_music_genre: str = Field(
         description="The musical genre that matches this repo's vibe, e.g., Cyberpunk Synthwave, Lofi Ambient, Industrial Orchestral"
     )
+    directorial_audio_pref: str = Field(
+        description="The director's preferred audio style instruction, e.g., 'ambient synth with lyrics', 'minimalist spoken word only', 'orchestral backing without lyrics'"
+    )
     metaphors: List[Metaphor]
     characters: List[Character]
     scenes: List[Scene] = Field(
@@ -54,6 +57,7 @@ class NarrativeArchitect:
             "title": "The Gardener of Echoes",
             "logline": "In a solitary research station, a weary systems engineer discovers that her digital assistant is a self-improving entity that transforms her past failures into a lush garden of autonomous skills.",
             "suggested_music_genre": "Cinematic Cyber-Organic Ambient",
+            "directorial_audio_pref": "haunting ambient synth with lyrical backing hums",
             "metaphors": [
                 {
                     "technical": "SQLite FTS5 & Persistent Memory",
@@ -160,6 +164,8 @@ class NarrativeArchitect:
             Return your response as a strict JSON object with these keys:
             - title: string
             - logline: string
+            - suggested_music_genre: string
+            - directorial_audio_pref: string (narrator instructions e.g. spoken-word only, lyrics, quiet, etc.)
             - metaphors: array of objects with keys 'technical' and 'narrative'
             - characters: array of objects with keys 'name' and 'description'
             - scenes: array of 4 objects with keys:
@@ -185,6 +191,8 @@ class NarrativeArchitect:
                 return {
                     "title": parsed.title,
                     "logline": parsed.logline,
+                    "suggested_music_genre": parsed.suggested_music_genre,
+                    "directorial_audio_pref": parsed.directorial_audio_pref,
                     "metaphors": [
                         {"technical": m.technical, "narrative": m.narrative}
                         for m in parsed.metaphors

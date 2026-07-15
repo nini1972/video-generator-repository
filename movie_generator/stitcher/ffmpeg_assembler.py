@@ -1,4 +1,5 @@
 import os
+import hashlib
 import shutil
 import subprocess
 import requests
@@ -159,7 +160,7 @@ class FFmpegAssembler:
     def stitch_movie(self, storyboard: dict, output_filepath: str, repo_slug: str = None) -> dict:
         """
         Processes individual storyboard segments, downloads resources,
-        and mixes audio tracks (voiceover + background music at -18dB) with video,
+        and mixes audio tracks (voiceover and/or background music based on dynamic direction) with video,
         compiling them into a final .mp4 file.
         """
         logs = []
@@ -169,6 +170,15 @@ class FFmpegAssembler:
         ffmpeg_ok = self.is_ffmpeg_available()
         logs.append(f"Verifying FFmpeg executable: {'FOUND' if ffmpeg_ok else 'NOT FOUND'}")
         
+        # Parse audio direction variables requested by the StoryboardDirector
+        audio_dir_opts = storyboard.get("audio_direction", {}) if storyboard.get("audio_direction") else {}
+        soundtrack_mode = audio_dir_opts.get("soundtrack_mode", "instrumental_only")
+        speech_mode = audio_dir_opts.get("speech_mode", "full_narration")
+        soundtrack_style = audio_dir_opts.get("soundtrack_style", "Continuous cinematic score")
+
+        logs.append(f"Audio Direction received: [soundtrack_mode={soundtrack_mode}], [speech_mode={speech_mode}]")
+        logs.append(f"Soundtrack style instructions: {soundtrack_style}")
+
         # 2. Extract asset urls
         music_url = storyboard.get("master_music_url")
         speech_url = storyboard.get("master_speech_url")
@@ -188,7 +198,8 @@ class FFmpegAssembler:
         local_concat_video = os.path.join(assets_dir, "concat_visuals.mp4")
 
         # 3. Download/Verify cached assets
-        if music_url:
+        # Download soundtrack if not specifically requested as "no_music"
+        if music_url and soundtrack_mode != "no_music":
             logs.append(f"Caching soundtrack: {music_url}")
             if not os.path.exists(local_music):
                 success = self.download_file(music_url, local_music)
@@ -196,7 +207,8 @@ class FFmpegAssembler:
             else:
                 logs.append("Soundtrack already cached locally.")
 
-        if speech_url:
+        # Download narration files if not specifically requested as "no_speech"
+        if speech_url and speech_mode != "no_speech":
             logs.append(f"Caching speech voiceover: {speech_url}")
             if not os.path.exists(local_speech):
                 success = self.download_file(speech_url, local_speech)
@@ -254,30 +266,121 @@ class FFmpegAssembler:
 
             if all_clips_ok:
                 kb_concat = os.path.join(assets_dir, "ken_burns_concat.mp4")
-                if self._concatenate_video_clips(clip_paths, kb_concat):
+                # Content-hash the concat so a changed set of clips triggers a rebuild
+                clips_hash = hashlib.sha256("|".join(clip_paths).encode()).hexdigest()[:16]
+                kb_concat = os.path.join(assets_dir, f"ken_burns_{clips_hash}.mp4")
+                if os.path.exists(kb_concat):
+                    local_concat_video = kb_concat
+                    logs.append(f"Ken Burns video already cached ({clips_hash}).")
+                elif self._concatenate_video_clips(clip_paths, kb_concat):
                     local_concat_video = kb_concat
                     logs.append("Ken Burns personalised video assembled successfully!")
                 else:
                     logs.append("Concatenation failed — falling back to cached video.")
         # ──────────────────────────────────────────────────────────────────────
 
-        # 4. Synthesize FFmpeg Command
-        # This mixes narration (input 1) and background music (input 2, volume lowered by -18dB to ensure crisp dialog)
-        # overlaying it directly on the compiled visual video stream (input 0).
-        ffmpeg_cmd = [
-            self.ffmpeg_path, "-y",
-            "-i", local_concat_video,  # [0] Visuals (no audio)
-            "-i", local_speech,        # [1] Narration Voiceover
-            "-i", local_music,         # [2] Background Soundtrack
-            "-filter_complex", 
-            "[2:a]volume=0.15[bg]; [1:a][bg]amix=inputs=2:duration=longest[mixed_audio]",
-            "-map", "0:v",             # Map video from [0]
-            "-map", "[mixed_audio]",   # Map mixed audio track
-            "-c:v", "copy",            # Copy video stream directly (super fast, no re-encoding!)
-            "-c:a", "aac",             # Compress audio as standard ACC stream
-            "-shortest",               # Stop recording when shortest stream ends (prevents infinite music trails)
-            output_filepath
-        ]
+        # ── PRIMARY PATH: Pre-mixed audio from AudioMixer ─────────────────────
+        local_mixed_audio = storyboard.get("local_mixed_audio_path")
+        if local_mixed_audio and os.path.exists(local_mixed_audio):
+            logs.append(f"Using pre-mixed master audio track: {os.path.basename(local_mixed_audio)}")
+            ffmpeg_cmd = [
+                self.ffmpeg_path, "-y",
+                "-i", local_concat_video,
+                "-i", local_mixed_audio,
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest",
+                output_filepath
+            ]
+            cmd_string = " ".join(ffmpeg_cmd)
+            logs.append(f"Generated FFmpeg Command:\n`{cmd_string}`")
+
+            if ffmpeg_ok:
+                try:
+                    logs.append("Executing program assembly in sub-process...")
+                    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=True)
+                    logs.append("FFmpeg process completed successfully!")
+                    return {
+                        "success": True,
+                        "output_filepath": output_filepath,
+                        "command_executed": cmd_string,
+                        "logs": logs,
+                        "stderr": result.stderr
+                    }
+                except subprocess.CalledProcessError as e:
+                    logs.append(f"FFmpeg (pre-mixed path) failed: {e.returncode}")
+                    logs.append(f"Error: {e.stderr}")
+                    logs.append("Falling back to legacy audio mixing path...")
+            else:
+                logs.append("FFmpeg not available — cannot assemble with pre-mixed audio.")
+
+        # ── FALLBACK PATH: Legacy amix filter for remote-only assets ──────────
+        # 4. Synthesize FFmpeg Command based on Audio Direction options
+        has_music = os.path.exists(local_music) and (soundtrack_mode != "no_music")
+        has_speech = os.path.exists(local_speech) and (speech_mode != "no_speech")
+
+        ffmpeg_cmd = [self.ffmpeg_path, "-y", "-i", local_concat_video]
+        
+        filter_complex = []
+        input_index = 1
+        speech_input_num = None
+        music_input_num = None
+
+        if has_speech:
+            ffmpeg_cmd.extend(["-i", local_speech])
+            speech_input_num = input_index
+            input_index += 1
+            
+        if has_music:
+            ffmpeg_cmd.extend(["-i", local_music])
+            music_input_num = input_index
+            input_index += 1
+
+        # Formulate mixing filters maps
+        if has_speech and has_music:
+            # Mix speech (narration at 1.0 vol) and background music (at 0.15 vol)
+            # Shorten sound or video clip boundary ends safely
+            filter_complex = f"[{music_input_num}:a]volume=0.15[bg]; [{speech_input_num}:a][bg]amix=inputs=2:duration=longest[mixed_audio]"
+            ffmpeg_cmd.extend([
+                "-filter_complex", filter_complex,
+                "-map", "0:v",
+                "-map", "[mixed_audio]",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest",
+                output_filepath
+            ])
+        elif has_speech:
+            # Spoken words only (No music mode)
+            ffmpeg_cmd.extend([
+                "-map", "0:v",
+                "-map", f"{speech_input_num}:a",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest",
+                output_filepath
+            ])
+        elif has_music:
+            # Soundtrack music only (Music with lyrics, without lyrics, no word speech)
+            # Reduce background music volume dump to 0.70 since there's no narration conflict
+            filter_complex = f"[{music_input_num}:a]volume=0.70[bg]"
+            ffmpeg_cmd.extend([
+                "-filter_complex", filter_complex,
+                "-map", "0:v",
+                "-map", "[bg]",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest",
+                output_filepath
+            ])
+        else:
+            # Complete Silent Cinematic visual stream
+            ffmpeg_cmd.extend([
+                "-map", "0:v",
+                "-c:v", "copy",
+                "-an", # Strictly strips any audio streams
+                output_filepath
+            ])
 
         cmd_string = " ".join(ffmpeg_cmd)
         logs.append(f"Generated FFmpeg Command:\n`{cmd_string}`")

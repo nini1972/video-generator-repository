@@ -24,6 +24,8 @@ class RunPipelineRequest(BaseModel):
     repo_path: str = "."
     gemini_api_key: str = ""
     force_mock: bool = False
+    soundtrack_pref: str = "auto"
+    speech_pref: str = "auto"
 
 @app.get("/")
 def read_root():
@@ -55,7 +57,9 @@ def run_pipeline(req: RunPipelineRequest):
         result = pipeline.run(
             repo_path=target_path,
             output_movie_filename="final_movie.mp4",
-            force_mock=req.force_mock
+            force_mock=req.force_mock,
+            soundtrack_pref=req.soundtrack_pref,
+            speech_pref=req.speech_pref
         )
         return result
     except Exception as e:

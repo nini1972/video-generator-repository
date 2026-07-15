@@ -706,6 +706,45 @@
             flex-grow: 1;
         }
 
+        /* Director's Commentary */
+        .director-commentary {
+            margin-top: 10px;
+            padding: 10px 12px;
+            background: rgba(255, 183, 77, 0.08);
+            border-left: 3px solid rgba(255, 183, 77, 0.5);
+            border-radius: 4px;
+        }
+
+        .commentary-label {
+            font-family: var(--font-display);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: rgba(255, 183, 77, 0.9);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .commentary-text {
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            margin-top: 6px;
+            font-style: italic;
+        }
+
+        /* Symbol Map 'Why' Rationale */
+        .metaphor-why {
+            display: block;
+            font-size: 10.5px;
+            color: rgba(255, 183, 77, 0.7);
+            margin-top: 4px;
+            line-height: 1.4;
+            font-style: italic;
+        }
+
         /* Movie Details Overlay Card */
         .movie-specs-panel {
             padding: 20px 24px;
@@ -790,6 +829,34 @@
                     </div>
                 </div>
 
+                <!-- Soundtrack Selector -->
+                <div class="input-group">
+                    <label class="input-label" for="soundtrackPref">Soundtrack Score Mode</label>
+                    <div class="input-wrapper">
+                        <i class="fa-solid fa-music field-icon"></i>
+                        <select class="input-field" id="soundtrackPref" style="background-color: #0b0f19; color: var(--text-light); border: 1px solid var(--border-color); width: 100%; border-radius: 6px; padding: 10px 12px 10px 42px;">
+                            <option value="auto">Auto-Direct (Recommend)</option>
+                            <option value="instrumental_only">Pure Instrumental (No vocals)</option>
+                            <option value="with_lyrics">With Singing/Lyrics Vocals</option>
+                            <option value="no_music">No Music (Spoken-word focus / silent)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Narration Selector -->
+                <div class="input-group">
+                    <label class="input-label" for="speechPref">Narration Speech Mode</label>
+                    <div class="input-wrapper">
+                        <i class="fa-solid fa-microphone field-icon"></i>
+                        <select class="input-field" id="speechPref" style="background-color: #0b0f19; color: var(--text-light); border: 1px solid var(--border-color); width: 100%; border-radius: 6px; padding: 10px 12px 10px 42px;">
+                            <option value="auto">Auto-Direct (Recommend)</option>
+                            <option value="full_narration">Full Spoken Story (Every scene)</option>
+                            <option value="prologue_epilogue_only">Prologue & Epilogue Only (Scene 1 & 4)</option>
+                            <option value="no_speech">No Spoken Voices (Cinematic visual journey)</option>
+                        </select>
+                    </div>
+                </div>
+
                 <!-- Mode Toggle -->
                 <div class="toggle-switch-container">
                     <div class="toggle-info">
@@ -822,8 +889,8 @@
                         <div class="node-item" id="node2">
                             <div class="node-icon"><i class="fa-solid fa-pen-nib"></i></div>
                             <div class="node-details">
-                                <span class="node-name">NarrativeArchitect</span>
-                                <span class="node-desc">Drafting allegorical screenplay...</span>
+                                <span class="node-name">PromptArchitect</span>
+                                <span class="node-desc">Grounding symbols in code...</span>
                             </div>
                         </div>
                         <div class="node-item" id="node3">
@@ -915,6 +982,8 @@
         const statusText = document.getElementById("statusText");
         const togglePassword = document.getElementById("togglePassword");
         const apiKeyField = document.getElementById("apiKey");
+        const soundtrackPrefSelector = document.getElementById("soundtrackPref");
+        const speechPrefSelector = document.getElementById("speechPref");
         const btnLaunch = document.getElementById("btnLaunch");
         const forceMockCheckbox = document.getElementById("forceMock");
         const repoPathField = document.getElementById("repoPath");
@@ -1004,6 +1073,8 @@
             const repoPath = repoPathField.value;
             const apiKey = apiKeyField.value;
             const forceMock = forceMockCheckbox.checked;
+            const soundtrackPref = soundtrackPrefSelector ? soundtrackPrefSelector.value : "auto";
+            const speechPref = speechPrefSelector ? speechPrefSelector.value : "auto";
 
             try {
                 // Node 1: Investigator Start
@@ -1017,7 +1088,9 @@
                     body: JSON.stringify({
                         repo_path: repoPath,
                         gemini_api_key: apiKey,
-                        force_mock: forceMock
+                        force_mock: forceMock,
+                        soundtrack_pref: soundtrackPref,
+                        speech_pref: speechPref
                     })
                 });
 
@@ -1067,10 +1140,13 @@
 
         // Render Outputs in Web Panel
         function renderOutputs(data) {
-            const title = data.screenplay.title || "The Gardener of Echoes";
+            // Support both new (creative_brief) and legacy (screenplay) response shapes
+            const brief = data.creative_brief || data.screenplay || {};
+            const title = brief.title || "The Gardener of Echoes";
             const aesthetic = data.storyboard.aesthetic_style || "Cyber-Organic";
             const storyboards = data.storyboard.storyboards || [];
-            const metaphors = data.screenplay.metaphors || [];
+            // Support both symbol_map (new) and metaphors (legacy)
+            const symbols = brief.symbol_map || brief.metaphors || [];
 
             // 1. Specs Update
             movieSpecsPanel.style.display = "flex";
@@ -1091,20 +1167,25 @@
             theaterVideo.src = `${API_BASE}/api/assets/video?t=${new Date().getTime()}${repoParam}`;
             theaterVideo.play();
 
-            // 3. Render Metaphor Grid
+            // 3. Render Symbol Map Grid (tech → visual symbol with rationale)
             metaphorSection.style.display = "flex";
             metaphorGrid.innerHTML = "";
-            metaphors.forEach(met => {
+            symbols.forEach(sym => {
                 const card = document.createElement("div");
                 card.className = "metaphor-card";
+                // Support both symbol_map shape (technical/symbol/why) and legacy (technical/narrative)
+                const techLabel = sym.technical || "";
+                const visualLabel = sym.symbol || sym.narrative || "";
+                const whyLabel = sym.why ? `<span class="metaphor-why">↳ ${sym.why}</span>` : "";
                 card.innerHTML = `
-                    <span class="metaphor-tech">${met.technical}</span>
-                    <span class="metaphor-narrative">${met.narrative}</span>
+                    <span class="metaphor-tech">${techLabel}</span>
+                    <span class="metaphor-narrative">${visualLabel}</span>
+                    ${whyLabel}
                 `;
                 metaphorGrid.appendChild(card);
             });
 
-            // 4. Render Storyboard Gallery Grid
+            // 4. Render Storyboard Gallery Grid with Director's Commentary
             storyboardSection.style.display = "flex";
             storyboardGrid.innerHTML = "";
             storyboards.forEach(scene => {
@@ -1116,6 +1197,14 @@
                 if (scene.local_image_path) {
                     imgUrl = `${API_BASE}/api/assets/image?path=${encodeURIComponent(scene.local_image_path)}`;
                 }
+
+                // Director's Commentary (creative_rationale)
+                const commentary = scene.creative_rationale
+                    ? `<div class="director-commentary">
+                         <span class="commentary-label"><i class="fa-solid fa-film"></i> Director's Commentary</span>
+                         <p class="commentary-text">${scene.creative_rationale}</p>
+                       </div>`
+                    : "";
                 
                 card.innerHTML = `
                     <div class="storyboard-img-container">
@@ -1125,6 +1214,7 @@
                     <div class="storyboard-card-body">
                         <h4 class="storyboard-card-title">${scene.title}</h4>
                         <p class="storyboard-card-desc">${scene.narration_text}</p>
+                        ${commentary}
                     </div>
                 `;
                 storyboardGrid.appendChild(card);
