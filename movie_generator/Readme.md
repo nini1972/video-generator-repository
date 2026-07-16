@@ -78,3 +78,7 @@ director = StoryboardDirector(free_form=True)
 
 Strict mode (default `free_form=False`) preserves the original deterministic
 behaviour for backward compatibility.
+
+
+to verify: max_workers differ ;  emotional_tone=scene_emotion, voice=voice,  total_scenes: int = 4,
+when speech is used , have a long scene duration, otherwise the words will break.
