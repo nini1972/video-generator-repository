@@ -864,6 +864,17 @@
                     </div>
                 </div>
 
+                <div class="toggle-switch-container">
+                    <div class="toggle-info">
+                        <span class="toggle-info-title">Creative Freedom Mode</span>
+                        <span class="toggle-info-desc">Favor artistic interpretation over literal code metaphors</span>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="freeForm">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
                 <!-- Mode Toggle -->
                 <div class="toggle-switch-container">
                     <div class="toggle-info">
@@ -991,6 +1002,7 @@
         const apiKeyField = document.getElementById("apiKey");
         const soundtrackPrefSelector = document.getElementById("soundtrackPref");
         const speechPrefSelector = document.getElementById("speechPref");
+        const freeFormCheckbox = document.getElementById("freeForm");
         const btnLaunch = document.getElementById("btnLaunch");
         const forceMockCheckbox = document.getElementById("forceMock");
         const repoPathField = document.getElementById("repoPath");
@@ -1082,6 +1094,7 @@
             const forceMock = forceMockCheckbox.checked;
             const soundtrackPref = soundtrackPrefSelector ? soundtrackPrefSelector.value : "auto";
             const speechPref = speechPrefSelector ? speechPrefSelector.value : "auto";
+            const freeForm = freeFormCheckbox.checked;
 
             try {
                 // Node 1: Investigator Start
@@ -1097,7 +1110,8 @@
                         gemini_api_key: apiKey,
                         force_mock: forceMock,
                         soundtrack_pref: soundtrackPref,
-                        speech_pref: speechPref
+                        speech_pref: speechPref,
+                        free_form: freeForm
                     })
                 });
 

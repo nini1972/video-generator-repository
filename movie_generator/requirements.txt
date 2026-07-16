@@ -1,0 +1,7 @@
+fastapi
+google-genai
+pydantic
+pydub
+audioop-lts
+requests
+uvicorn[standard]

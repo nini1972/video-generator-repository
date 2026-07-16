@@ -1,6 +1,6 @@
 import os
-import json
 import time
+from typing import Optional
 from movie_generator.agents.repo_investigator import RepoInvestigator
 from movie_generator.agents.prompt_architect import PromptArchitect
 from movie_generator.agents.storyboard_director import StoryboardDirector
@@ -9,7 +9,7 @@ from movie_generator.stitcher.ffmpeg_assembler import FFmpegAssembler
 
 
 class AgentPipeline:
-    def __init__(self, gemini_api_key: str = None, ffmpeg_path: str = "ffmpeg"):
+    def __init__(self, gemini_api_key: str = None, ffmpeg_path: str = "ffmpeg", free_form: bool = False):
         # IMPORTANT: Set the env var BEFORE constructing agents so their
         # genai.Client() picks up the key from the environment.
         # We write to both GEMINI_API_KEY and GOOGLE_API_KEY because the SDK
@@ -25,12 +25,13 @@ class AgentPipeline:
                 os.environ["GOOGLE_API_KEY"] = env_key
 
         self.investigator = RepoInvestigator()
-        self.prompt_architect = PromptArchitect()
-        self.director = StoryboardDirector()
+        self.prompt_architect = PromptArchitect(free_form=free_form)
+        self.director = StoryboardDirector(free_form=free_form)
+        self.free_form = free_form
         self.mixer = AudioMixer()
         self.stitcher = FFmpegAssembler(ffmpeg_path=ffmpeg_path)
 
-    def run(self, repo_path: str, output_movie_filename: str = "master_movie.mp4", force_mock: bool = False, soundtrack_pref: str = "auto", speech_pref: str = "auto") -> dict:
+    def run(self, repo_path: str, output_movie_filename: str = "master_movie.mp4", force_mock: bool = False, soundtrack_pref: str = "auto", speech_pref: str = "auto", free_form: Optional[bool] = None) -> dict:
         """
         Runs the complete end-to-end movie generation agent workflow:
         RepoInvestigator -> PromptArchitect -> StoryboardDirector -> FFmpegAssembler.
@@ -40,6 +41,7 @@ class AgentPipeline:
         """
         pipeline_log = []
         pipeline_log.append("Initializing CineRepo Agent Pipeline...")
+        effective_free_form = self.free_form if free_form is None else free_form
 
         api_key_set = (
             (os.environ.get("GEMINI_API_KEY", "").strip() != "") or
@@ -53,6 +55,10 @@ class AgentPipeline:
             pipeline_log.append("No Gemini API Key detected. Booting in Demo Mode (NousResearch/hermes-agent showcase).")
         else:
             pipeline_log.append(f"Gemini API Key detected. Running live multi-agent cognitive pipeline on: '{repo_path}'")
+
+        pipeline_log.append(
+            f"Creative mode: {'free-form' if effective_free_form else 'grounded story'}."
+        )
 
         # ── Stage 1: Repo Analysis ─────────────────────────────────────────────
         pipeline_log.append("[STAGE 1] Launching RepoInvestigator Agent...")
@@ -72,7 +78,9 @@ class AgentPipeline:
         pipeline_log.append("[STAGE 2] Launching PromptArchitect Agent...")
         t1 = time.time()
         try:
-            creative_brief = self.prompt_architect.craft_brief(analysis, mock_mode=use_mock)
+            creative_brief = self.prompt_architect.craft_brief(
+                analysis, mock_mode=use_mock, free_form=effective_free_form
+            )
             symbol_count = len(creative_brief.get("symbol_map", []))
             scene_count = len(creative_brief.get("scene_arc", []))
             pipeline_log.append(
@@ -82,7 +90,9 @@ class AgentPipeline:
         except RuntimeError as e:
             pipeline_log.append(f"[STAGE 2 ERROR] {e}")
             pipeline_log.append("Stage 2 degraded to demo creative brief.")
-            creative_brief = self.prompt_architect.craft_brief(analysis, mock_mode=True)
+            creative_brief = self.prompt_architect.craft_brief(
+                analysis, mock_mode=True, free_form=effective_free_form
+            )
 
         # Generate a slug from the repository name to namespace assets
         repo_name = analysis.get("repo_name", "unknown_repo")
@@ -101,7 +111,8 @@ class AgentPipeline:
                 mock_mode=use_mock, 
                 repo_slug=repo_slug,
                 soundtrack_pref=soundtrack_pref,
-                speech_pref=speech_pref
+                speech_pref=speech_pref,
+                free_form=effective_free_form,
             )
             scene_count = len(storyboard.get("storyboards", []))
             pipeline_log.append(
@@ -116,7 +127,8 @@ class AgentPipeline:
                 mock_mode=True, 
                 repo_slug=None,
                 soundtrack_pref=soundtrack_pref,
-                speech_pref=speech_pref
+                speech_pref=speech_pref,
+                free_form=effective_free_form,
             )
 
         # ── Stage 3.5: Audio Mixing ────────────────────────────────────────────

@@ -12,7 +12,7 @@ authoritative music direction.
 
 import os
 import json
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
@@ -24,12 +24,12 @@ from movie_generator.agents.json_utils import robust_parse_json
 class SymbolMapping(BaseModel):
     technical: str = Field(description="The real technical component from the repo (e.g., 'WebSocket relay layer')")
     symbol: str = Field(description="The visual metaphor representing it (e.g., 'Luminous bridge filaments between star-nodes')")
-    why: str = Field(description="Explanation of why this mapping works — forces chain-of-thought grounding")
+    why: Optional[str] = Field(default=None, description="Optional explanation of the technical connection behind the visual metaphor")
 
 
 class SceneSeed(BaseModel):
-    scene_number: int = Field(description="Scene number (1-indexed)")
-    dramatic_beat: str = Field(description="The dramatic purpose of this scene (e.g., 'cold start', 'the spark', 'crisis', 'harmony')")
+    scene_number: int = Field(default=1, description="Scene number (1-indexed)")
+    dramatic_beat: Optional[str] = Field(default=None, description="The dramatic purpose of this scene (e.g., 'cold start', 'the spark', 'crisis', 'harmony')")
     visual_seed: str = Field(description="1-2 sentence visual concept for this scene")
 
 
@@ -37,7 +37,7 @@ class CreativeBriefSchema(BaseModel):
     title: str = Field(description="Cinematic title for the short film")
     logline: str = Field(description="One-sentence pitch (under 200 characters)")
     symbol_map: List[SymbolMapping] = Field(description="Technical component → visual symbol mappings with rationale")
-    scene_arc: List[SceneSeed] = Field(description="Visual seeds for the dramatic arc (3-6 scenes)")
+    scene_arc: List[SceneSeed] = Field(min_length=2, max_length=8, description="Visual seeds for a renderable 2-8 scene arc")
     tone: str = Field(description="Emotional arc description (e.g., 'Contemplative wonder building to triumphant revelation')")
     visual_anchors: str = Field(description="Color palette and atmosphere keywords (e.g., 'Deep space indigo, bioluminescent cyan, warm amber')")
     music_direction: str = Field(description="Single authoritative music/soundtrack description for the entire film")
@@ -50,12 +50,13 @@ class PromptArchitect:
     visual symbols, ensuring every metaphor is grounded in real code.
     """
 
-    def __init__(self, client: genai.Client = None):
+    def __init__(self, client: genai.Client = None, free_form: bool = False):
         if client:
             self.client = client
         else:
             api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
             self.client = genai.Client(api_key=api_key) if api_key else None
+        self.free_form = free_form
 
     def _get_mock_brief(self) -> dict:
         """Returns a mock creative brief modelled on the Hermes Agent repo."""
@@ -96,7 +97,7 @@ class PromptArchitect:
             "narration_voice": "Cinematic film narrator — dramatic, with dynamic range. Intense whisper for mystery, powerful projection for triumph. NOT a flat documentary read."
         }
 
-    def craft_brief(self, repo_analysis: dict, mock_mode: bool = False) -> dict:
+    def craft_brief(self, repo_analysis: dict, mock_mode: bool = False, free_form: Optional[bool] = None) -> dict:
         """
         Translates a RepoInvestigator's technical analysis into a creative brief.
         Every visual symbol is explicitly tied to a real repo component.
@@ -104,6 +105,7 @@ class PromptArchitect:
         Args:
             repo_analysis: Output from RepoInvestigator.analyze()
             mock_mode: If True, returns the cached Hermes Agent brief
+            free_form: If True, relaxes structural constraints (defaults to self.free_form)
 
         Returns:
             Creative brief dict with symbol_map, scene_arc, tone, etc.
@@ -111,6 +113,10 @@ class PromptArchitect:
         Raises:
             RuntimeError on generation failure.
         """
+        # Use instance-level free_form if not explicitly provided
+        if free_form is None:
+            free_form = self.free_form
+
         if mock_mode or not self.client:
             return self._get_mock_brief()
 
@@ -133,38 +139,36 @@ class PromptArchitect:
             - Metaphorical theme to develop: {metaphor_theme}
             - Visual atmosphere/vibe: {suggested_vibe}
             - Suggested music genre: {suggested_genre}
+            """
 
+            if free_form:
+                creative_contract = """
+                CREATIVE FREEDOM MODE:
+                - Choose a linear, non-linear, circular, or fragmented narrative structure.
+                - Write 2-8 scene seeds. Beats are optional and may be unconventional.
+                - Use the repository as inspiration rather than a scene-by-scene checklist.
+                - Include 1-4 symbol mappings only when they strengthen the film; each rationale is optional.
+                - Prefer a distinctive cinematic idea over literal visualizations of code.
+                """
+            else:
+                creative_contract = """
+                GROUNDED STORY MODE:
+                - Create a symbol mapping for every architecture component.
+                - Explain why every symbol maps to its corresponding technical behavior.
+                - Write 2-8 scene seeds that start with a 'cold start' beat and conclude with 'harmony'.
+                - Keep every major visual grounded in a real repository capability.
+                """
+
+            prompt += f"""
             YOUR TASK — Create a Creative Brief:
+            {creative_contract}
 
-            1. SYMBOL MAP: For EACH architecture_component in the repo analysis, create
-               a visual symbol mapping. Every symbol MUST be grounded in what the
-               component actually does technically. Explain WHY the mapping works —
-               this forces you to think deeply about the connection between code and cinema.
-               
-               Bad example: "The database is represented by a glowing orb" (too generic)
-               Good example: "FTS5's full-text search indexes are visualized as root
-               tendrils that branch through the station floor — because search indexes
-               spread through data the way roots spread through soil, connecting
-               everything beneath the surface."
+            Each scene seed must include a 1-indexed scene_number and a 1-2 sentence visual_seed.
+            Use dramatic_beat when it improves clarity.
 
-            2. SCENE ARC: Write between 3 and 6 visual scene seeds depending on repo
-               complexity. Simple utility repos → 3 scenes. Complex multi-agent systems → 5-6.
-               Each seed should include:
-               - scene_number: integer (1-indexed)
-               - dramatic_beat: the narrative purpose (e.g., 'cold start', 'the spark',
-                 'crisis', 'harmony', 'escalation', 'revelation')
-               - visual_seed: 1-2 sentence core visual concept
-
-               The arc MUST always start with a 'cold start' beat and end with a 'harmony'
-               beat. The middle beats are your creative choice based on the repo's story.
-
-            3. SINGLE MUSIC DIRECTION: Write ONE definitive soundtrack description
-               that fits the entire film. Build on the suggested genre: "{suggested_genre}".
-               Keep it specific to this repo's personality — not generic "epic cinematic".
-
-            4. NARRATION VOICE: Describe the narrator's vocal style and emotional register.
-               Think CINEMATIC FILM NARRATOR, not documentary. The voice should have
-               dramatic range — intensity for crisis, whisper for mystery, triumph for resolution.
+            Write ONE definitive soundtrack description that fits the entire film. Build on
+            the suggested genre: "{suggested_genre}". Describe a cinematic narration voice
+            with enough dramatic range for mystery, tension, and resolution.
 
             Return a strict JSON object.
             """

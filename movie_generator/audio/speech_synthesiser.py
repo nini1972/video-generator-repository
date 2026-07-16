@@ -11,6 +11,7 @@ import hashlib
 import base64
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 from google import genai
 from google.genai import types
 
@@ -37,18 +38,16 @@ class SpeechSynthesiser:
         "last": "warm, triumphant, and deeply moved. Speak with quiet awe and satisfaction, as if witnessing a miracle.",
     }
 
-    def __init__(self, client: genai.Client = None):
-        if client:
-            self.client = client
-        else:
-            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-            self.client = genai.Client(api_key=api_key) if api_key else None
+    def __init__(self, client: Optional[genai.Client] = None):
+        self.client: Optional[genai.Client]
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        self.client = client or (genai.Client(api_key=api_key) if api_key else None)
 
     def synthesise_scene(self, narration_text: str, scene_num: int,
-                         output_dir: str, voice: str = None,
+                         output_dir: str, voice: Optional[str] = None,
                          total_scenes: int = 4,
-                         narration_voice: str = None,
-                         emotional_tone: str = None) -> str | None:
+                         narration_voice: Optional[str] = None,
+                         emotional_tone: Optional[str] = None) -> str | None:
         """
         Generates a .wav file for a single scene's narration.
         Uses content-hash naming to enable caching without staleness.
@@ -81,10 +80,11 @@ class SpeechSynthesiser:
 
         # Build voice direction: use creative brief's narration_voice if provided
         voice_direction = narration_voice or "a cinematic film narrator"
+        os.makedirs(output_dir, exist_ok=True)
 
-        # Content-hash filename — include emotion for cache invalidation
+        # Content-hash filename — include all performance direction for cache invalidation
         text_hash = hashlib.sha256(
-            f"{narration_trimmed}|{voice}|{emotion}".encode("utf-8")
+            f"{narration_trimmed}|{voice}|{voice_direction}|{emotion}".encode("utf-8")
         ).hexdigest()[:16]
         wav_path = os.path.join(output_dir, f"scene_{scene_num}_speech_{text_hash}.wav")
 
@@ -135,14 +135,15 @@ class SpeechSynthesiser:
 
                 # Extract audio data from response
                 for part in response.candidates[0].content.parts:
-                    if part.inline_data is not None:
-                        audio_data = part.inline_data.data
+                    inline_data = part.inline_data
+                    if inline_data is not None and inline_data.data is not None:
+                        audio_data = inline_data.data
                         if isinstance(audio_data, str):
                             audio_bytes = base64.b64decode(audio_data)
                         else:
-                            audio_bytes = audio_data
+                            audio_bytes = bytes(audio_data)
 
-                        mime_type = getattr(part.inline_data, 'mime_type', '') or ''
+                        mime_type = str(getattr(inline_data, 'mime_type', '') or '')
 
                         # Save audio — handle both WAV and raw PCM formats
                         if mime_type.startswith("audio/wav") or audio_bytes[:4] == b'RIFF':
@@ -168,8 +169,8 @@ class SpeechSynthesiser:
 
     def synthesise_all_scenes(self, scenes: list, output_dir: str,
                               speech_mode: str = "full_narration",
-                              voice: str = None,
-                              narration_voice: str = None) -> list:
+                              voice: Optional[str] = None,
+                              narration_voice: Optional[str] = None) -> list:
         """
         Generates speech for all scenes in parallel.
         Respects speech_mode: 'full_narration', 'prologue_epilogue_only', 'no_speech'.
@@ -184,6 +185,9 @@ class SpeechSynthesiser:
         if speech_mode == "no_speech":
             for scene in scenes:
                 scene["local_speech_path"] = None
+            return scenes
+
+        if not scenes:
             return scenes
 
         total_scenes = len(scenes)

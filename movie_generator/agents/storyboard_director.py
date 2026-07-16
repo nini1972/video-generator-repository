@@ -1,10 +1,9 @@
 import os
-import json
 import base64
 import hashlib
-from typing import List
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from pydantic import BaseModel
+from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 from movie_generator.agents.json_utils import robust_parse_json
@@ -18,7 +17,7 @@ class _StoryboardScene(BaseModel):
     duration_seconds: float
     visual_prompt: str
     narration_text: str
-    creative_rationale: str  # Director's self-reflection: why these symbols were chosen
+    creative_rationale: str = ""  # Optional in free-form mode
     emotional_tone: str       # TTS emotional direction for this scene (e.g., 'somber, reflective')
 
 
@@ -31,7 +30,7 @@ class _AudioDirection(BaseModel):
 class _StoryboardSchema(BaseModel):
     aesthetic_style: str
     audio_direction: _AudioDirection
-    storyboards: List[_StoryboardScene]
+    storyboards: List[_StoryboardScene] = Field(min_length=2, max_length=8)
 
 # Fallback audio/video URLs from the Flowith demo run.
 # Used when real TTS/music generation is not yet wired in.
@@ -41,12 +40,13 @@ _FALLBACK_VIDEO_URL = "https://r2-bucket.flowith.net/concat_1779012993538996307.
 
 
 class StoryboardDirector:
-    def __init__(self, client: genai.Client = None):
+    def __init__(self, client: genai.Client = None, free_form: bool = False):
         if client:
             self.client = client
         else:
             api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
             self.client = genai.Client(api_key=api_key) if api_key else None
+        self.free_form = free_form
 
         # Audio generation agents — share the same client/API key
         self.speech_synth = SpeechSynthesiser(client=self.client)
@@ -171,6 +171,8 @@ class StoryboardDirector:
 
     def _generate_scene_images(self, scenes: list, aesthetic_style: str, assets_dir: str) -> list:
         """Runs image generations concurrently using a thread pool."""
+        if not scenes:
+            return scenes
         with ThreadPoolExecutor(max_workers=len(scenes)) as executor:
             futures = [
                 executor.submit(self._generate_single_image, scene, aesthetic_style, assets_dir)
@@ -180,13 +182,17 @@ class StoryboardDirector:
                 future.result()  # Wait for all images to complete
         return scenes
 
-    def direct(self, creative_brief: dict, mock_mode: bool = False, repo_slug: str = None, soundtrack_pref: str = "auto", speech_pref: str = "auto") -> dict:
+    def direct(self, creative_brief: dict, mock_mode: bool = False, repo_slug: str = None, soundtrack_pref: str = "auto", speech_pref: str = "auto", free_form: Optional[bool] = None) -> dict:
         """
         Creates a storyboard from a creative brief, with self-reflection.
         The Director must justify every visual choice via creative_rationale.
         If mock_mode is True or GEMINI_API_KEY is missing, returns the cached Flowith storyboard.
         Raises RuntimeError on generation failure so callers can surface it to the user.
         """
+        # Use instance-level free_form if not explicitly provided
+        if free_form is None:
+            free_form = self.free_form
+
         if mock_mode or not self.client:
             return self._get_mock_storyboard(soundtrack_pref=soundtrack_pref, speech_pref=speech_pref)
 
@@ -221,6 +227,22 @@ class StoryboardDirector:
             ])
             scene_count = 4
 
+        if not 2 <= scene_count <= 8:
+            raise RuntimeError(
+                f"[StoryboardDirector] Expected 2-8 scene seeds, received {scene_count}."
+            )
+
+        if free_form:
+            symbol_instruction = """SYMBOLIC REFERENCE — Use the following motifs only when they strengthen the film. You may transform, combine, or omit them in favor of a more resonant visual idea:"""
+            visual_requirement = "- Use the creative brief as inspiration; literal component coverage is optional."
+            rationale_instruction = "Creative rationale is optional. Include it only when it clarifies a meaningful connection to the repository."
+            rationale_field = "creative_rationale: optional string"
+        else:
+            symbol_instruction = "SYMBOL MAP — You MUST use these visual symbols in your scenes:"
+            visual_requirement = "- MUST include the visual symbols from the symbol map above."
+            rationale_instruction = "For each scene, explain why the visuals connect to a specific technical component from the symbol map."
+            rationale_field = "creative_rationale: required string"
+
         try:
             prompt = f"""
             You are the DIRECTOR — the final creative authority on this cinematic short film.
@@ -236,7 +258,7 @@ class StoryboardDirector:
             Music Direction: {creative_brief.get('music_direction', '')}
             Narration Voice: {creative_brief.get('narration_voice', '')}
 
-            SYMBOL MAP — You MUST use these visual symbols in your scenes:
+            {symbol_instruction}
 {symbol_ref}
 
             SCENE ARC SEEDS — Develop each scene from these starting points:
@@ -250,7 +272,7 @@ class StoryboardDirector:
                - Include lighting: "dramatic rim lighting", "golden hour backlight"
                - Include atmosphere: "volumetric fog", "particle effects", "lens flare"
                - End with style anchors: "cinematic, 16:9 aspect ratio, photorealistic"
-               - MUST include the visual symbols from the symbol map above
+               {visual_requirement}
                - Do NOT include text, UI, typography, or watermarks in the image
 
             2. NARRATION — Write a voiceover for each scene:
@@ -261,10 +283,7 @@ class StoryboardDirector:
                - Use vivid, evocative language that creates tension, wonder, or triumph
                - Do NOT repeat the symbol map descriptions — describe what the VIEWER sees and feels
 
-            3. CREATIVE RATIONALE — For each scene, explain WHY you chose these visuals.
-               This is your self-reflection as Director. Connect each visual choice back to
-               a specific technical component from the symbol map. This proves the video
-               genuinely represents the underlying codebase.
+                3. CREATIVE RATIONALE — {rationale_instruction}
 
             4. EMOTIONAL TONE — For each scene, write a short emotional direction for the
                narrator's voice (e.g., 'somber, reflective, and quietly mysterious').
@@ -282,7 +301,7 @@ class StoryboardDirector:
             - aesthetic_style: string
             - audio_direction: object (soundtrack_mode, speech_mode, soundtrack_style)
             - storyboards: array of EXACTLY {scene_count} objects (scene_number, title,
-              duration_seconds, visual_prompt, narration_text, creative_rationale, emotional_tone)
+                            duration_seconds, visual_prompt, narration_text, {rationale_field}, emotional_tone)
             """
 
             response = self.client.models.generate_content(

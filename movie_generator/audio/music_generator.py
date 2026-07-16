@@ -12,6 +12,7 @@ Content-hash naming prevents stale cache across different creative directions.
 import os
 import hashlib
 import base64
+from typing import Any, Optional, cast
 from google import genai
 
 
@@ -25,8 +26,10 @@ class MusicGenerator:
         "lyria-3-clip-preview",
         "lyria-3-pro-preview",
     ]
+    _AUDIO_EXTENSIONS = (".mp3", ".wav", ".ogg", ".flac", ".m4a")
 
-    def __init__(self, client: genai.Client = None):
+    def __init__(self, client: Optional[genai.Client] = None):
+        self.client: Optional[genai.Client]
         if client:
             self.client = client
         else:
@@ -46,7 +49,7 @@ class MusicGenerator:
             output_dir: Directory to save the generated file
 
         Returns:
-            Local file path to the generated .mp3, or None on failure/skip.
+            Local file path to the generated audio file, or None on failure/skip.
         """
         if mode == "no_music" or not self.client:
             return None
@@ -57,11 +60,12 @@ class MusicGenerator:
         style_hash = hashlib.sha256(
             f"{style}|{genre}|{mode}|{duration:.0f}".encode("utf-8")
         ).hexdigest()[:16]
-        mp3_path = os.path.join(output_dir, f"soundtrack_{style_hash}.mp3")
-
-        if os.path.exists(mp3_path):
-            print(f"[MusicGen] Using cached soundtrack ({style_hash}).")
-            return mp3_path
+        soundtrack_base_path = os.path.join(output_dir, f"soundtrack_{style_hash}")
+        for cache_extension in self._AUDIO_EXTENSIONS:
+            cached_path = f"{soundtrack_base_path}{cache_extension}"
+            if os.path.exists(cached_path):
+                print(f"[MusicGen] Using cached soundtrack ({style_hash}).")
+                return cached_path
 
         print(f"[MusicGen] Generating {duration:.0f}s soundtrack: {style}...")
 
@@ -86,9 +90,12 @@ class MusicGenerator:
         for model in self._MUSIC_MODELS:
             try:
                 # Lyria uses the Interactions API, not generate_content
-                interaction = self.client.interactions.create(
-                    model=model,
-                    input=prompt,
+                interaction = cast(
+                    Any,
+                    self.client.interactions.create(
+                        model=model,
+                        input=prompt,
+                    ),
                 )
 
                 # Extract audio from the interaction response
@@ -99,14 +106,22 @@ class MusicGenerator:
                     if isinstance(audio_data, str):
                         audio_bytes = base64.b64decode(audio_data)
                     else:
-                        audio_bytes = audio_data
+                        audio_bytes = bytes(audio_data)
 
-                    with open(mp3_path, "wb") as f:
+                    generated_extension = self._get_audio_extension(
+                        str(getattr(generated_audio, "mime_type", "") or ""), audio_bytes
+                    )
+                    if not generated_extension:
+                        print(f"[MusicGen] {model} returned an unsupported audio format.")
+                        continue
+
+                    soundtrack_path = f"{soundtrack_base_path}{generated_extension}"
+                    with open(soundtrack_path, "wb") as f:
                         f.write(audio_bytes)
 
                     file_size_kb = len(audio_bytes) // 1024
                     print(f"[MusicGen] Soundtrack saved successfully ({file_size_kb}KB, model={model}).")
-                    return mp3_path
+                    return soundtrack_path
 
                 print(f"[MusicGen] {model} returned no audio data.")
 
@@ -116,4 +131,32 @@ class MusicGenerator:
                 continue
 
         print("[MusicGen] All models failed, proceeding without generated music.")
+        return None
+
+    @staticmethod
+    def _get_audio_extension(mime_type: str, audio_bytes: bytes) -> str | None:
+        """Returns a filename extension that matches the generated audio container."""
+        normalized_mime_type = str(mime_type).split(";", 1)[0].strip().lower()
+        mime_extensions = {
+            "audio/flac": ".flac",
+            "audio/m4a": ".m4a",
+            "audio/mp4": ".m4a",
+            "audio/mpeg": ".mp3",
+            "audio/mp3": ".mp3",
+            "audio/ogg": ".ogg",
+            "audio/wav": ".wav",
+            "audio/x-wav": ".wav",
+        }
+        if normalized_mime_type in mime_extensions:
+            return mime_extensions[normalized_mime_type]
+
+        if audio_bytes.startswith(b"RIFF"):
+            return ".wav"
+        if audio_bytes.startswith(b"OggS"):
+            return ".ogg"
+        if audio_bytes.startswith(b"fLaC"):
+            return ".flac"
+        if audio_bytes.startswith(b"ID3") or audio_bytes[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+            return ".mp3"
+
         return None

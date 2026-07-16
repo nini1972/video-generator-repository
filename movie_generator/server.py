@@ -26,6 +26,7 @@ class RunPipelineRequest(BaseModel):
     force_mock: bool = False
     soundtrack_pref: str = "auto"
     speech_pref: str = "auto"
+    free_form: bool = False
 
 @app.get("/")
 def read_root():
@@ -59,7 +60,8 @@ def run_pipeline(req: RunPipelineRequest):
             output_movie_filename="final_movie.mp4",
             force_mock=req.force_mock,
             soundtrack_pref=req.soundtrack_pref,
-            speech_pref=req.speech_pref
+            speech_pref=req.speech_pref,
+            free_form=req.free_form,
         )
         return result
     except Exception as e:
