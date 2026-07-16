@@ -29,6 +29,14 @@ class SpeechSynthesiser:
     # Safety: truncate narration before TTS to prevent oversized audio files
     MAX_NARRATION_CHARS = 300
 
+    # Fallback emotional arc — used only when Director doesn't provide emotional_tone
+    _EMOTIONAL_ARC_FALLBACK = {
+        "first": "somber, reflective, and quietly mysterious. Speak with a sense of loss and longing, as if surveying ruins.",
+        "middle_early": "curious and gently awed. Speak with growing wonder, as if witnessing something extraordinary taking shape.",
+        "middle_late": "urgent and intense. Speak with controlled tension, conveying high stakes and rapid action without shouting.",
+        "last": "warm, triumphant, and deeply moved. Speak with quiet awe and satisfaction, as if witnessing a miracle.",
+    }
+
     def __init__(self, client: genai.Client = None):
         if client:
             self.client = client
@@ -37,10 +45,23 @@ class SpeechSynthesiser:
             self.client = genai.Client(api_key=api_key) if api_key else None
 
     def synthesise_scene(self, narration_text: str, scene_num: int,
-                         output_dir: str, voice: str = None) -> str | None:
+                         output_dir: str, voice: str = None,
+                         total_scenes: int = 4,
+                         narration_voice: str = None,
+                         emotional_tone: str = None) -> str | None:
         """
         Generates a .wav file for a single scene's narration.
         Uses content-hash naming to enable caching without staleness.
+        
+        Args:
+            narration_text: The narration text to speak
+            scene_num: Scene number (1-indexed)
+            output_dir: Directory to save the audio file
+            voice: Override voice name (default: Charon)
+            total_scenes: Total number of scenes for arc position
+            narration_voice: Optional voice direction from the creative brief
+            emotional_tone: Director-generated emotional direction for this scene
+        
         Returns the local file path, or None on failure.
         """
         if not self.client or not narration_text or not narration_text.strip():
@@ -51,9 +72,19 @@ class SpeechSynthesiser:
         # Truncate long narrations at sentence boundary to prevent TTS overload
         narration_trimmed = self._truncate_narration(narration_text)
 
-        # Content-hash filename for cache dedup (hash the trimmed text)
+        # Determine emotional direction: prefer Director's emotional_tone,
+        # fall back to position-based interpolation
+        if emotional_tone:
+            emotion = emotional_tone
+        else:
+            emotion = self._get_fallback_emotion(scene_num, total_scenes)
+
+        # Build voice direction: use creative brief's narration_voice if provided
+        voice_direction = narration_voice or "a cinematic film narrator"
+
+        # Content-hash filename — include emotion for cache invalidation
         text_hash = hashlib.sha256(
-            f"{narration_trimmed}|{voice}".encode("utf-8")
+            f"{narration_trimmed}|{voice}|{emotion}".encode("utf-8")
         ).hexdigest()[:16]
         wav_path = os.path.join(output_dir, f"scene_{scene_num}_speech_{text_hash}.wav")
 
@@ -64,8 +95,17 @@ class SpeechSynthesiser:
         print(f"[TTS] Scene {scene_num}: generating narration ({len(narration_trimmed)} chars)...")
 
         prompt = (
-            f"Read the following text aloud as a cinematic movie narrator. "
-            f"Use a measured, dramatic pace with appropriate pauses:\n\n"
+            f"You are {voice_direction}. "
+            f"You have a deep, resonant MALE voice with dramatic range. "
+            f"Read the following text aloud AS IF narrating a cinematic movie trailer. "
+            f"Your emotional tone for this scene should be: {emotion} "
+            f"IMPORTANT PERFORMANCE DIRECTION: "
+            f"Vary your pacing — speed up during tense moments, slow down for revelations. "
+            f"Use dynamic volume — whisper for mystery, project for triumph. "
+            f"Let emotion colour every word — this is NOT a flat documentary reading. "
+            f"Pause dramatically between sentences to let images breathe. "
+            f"Maintain the same deep male vocal character throughout — never switch to a female voice. "
+            f"Read every single word of the text — do not stop early or skip any part.\n\n"
             f"{narration_trimmed}"
         )
 
@@ -85,6 +125,13 @@ class SpeechSynthesiser:
                         ),
                     ),
                 )
+
+                # Guard against empty/filtered response
+                if (not response.candidates
+                        or not response.candidates[0].content
+                        or not response.candidates[0].content.parts):
+                    print(f"[TTS] Scene {scene_num}: {model} returned empty response (possibly filtered). Retrying...")
+                    continue
 
                 # Extract audio data from response
                 for part in response.candidates[0].content.parts:
@@ -121,11 +168,16 @@ class SpeechSynthesiser:
 
     def synthesise_all_scenes(self, scenes: list, output_dir: str,
                               speech_mode: str = "full_narration",
-                              voice: str = None) -> list:
+                              voice: str = None,
+                              narration_voice: str = None) -> list:
         """
         Generates speech for all scenes in parallel.
         Respects speech_mode: 'full_narration', 'prologue_epilogue_only', 'no_speech'.
         Adds 'local_speech_path' to each scene dict in-place.
+        
+        Args:
+            narration_voice: Optional voice direction from the creative brief
+                             (e.g., 'Documentary narrator — measured, poetic, awed')
         """
         os.makedirs(output_dir, exist_ok=True)
 
@@ -139,6 +191,7 @@ class SpeechSynthesiser:
         def _process_scene(scene):
             scene_num = scene.get("scene_number", 0)
             narration = scene.get("narration_text", "")
+            scene_emotion = scene.get("emotional_tone", None)
 
             # Prologue/epilogue mode: only narrate first and last scenes
             if speech_mode == "prologue_epilogue_only":
@@ -146,7 +199,13 @@ class SpeechSynthesiser:
                     scene["local_speech_path"] = None
                     return
 
-            path = self.synthesise_scene(narration, scene_num, output_dir, voice=voice)
+            path = self.synthesise_scene(
+                narration, scene_num, output_dir,
+                voice=voice,
+                total_scenes=total_scenes,
+                narration_voice=narration_voice,
+                emotional_tone=scene_emotion,
+            )
             scene["local_speech_path"] = path
 
         with ThreadPoolExecutor(max_workers=min(len(scenes), 4)) as executor:
@@ -155,6 +214,24 @@ class SpeechSynthesiser:
                 f.result()  # Wait for all to complete
 
         return scenes
+
+    def _get_fallback_emotion(self, scene_num: int, total_scenes: int) -> str:
+        """
+        Position-based emotional interpolation for when the Director
+        doesn't provide an emotional_tone. Supports any scene count.
+        """
+        if total_scenes <= 1:
+            return self._EMOTIONAL_ARC_FALLBACK["last"]
+        if scene_num == 1:
+            return self._EMOTIONAL_ARC_FALLBACK["first"]
+        if scene_num == total_scenes:
+            return self._EMOTIONAL_ARC_FALLBACK["last"]
+        # Middle scenes: interpolate between curious and urgent
+        progress = (scene_num - 1) / (total_scenes - 1)
+        if progress < 0.5:
+            return self._EMOTIONAL_ARC_FALLBACK["middle_early"]
+        else:
+            return self._EMOTIONAL_ARC_FALLBACK["middle_late"]
 
     @staticmethod
     def _write_pcm_as_wav(pcm_data: bytes, output_path: str,

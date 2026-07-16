@@ -27,18 +27,17 @@ class SymbolMapping(BaseModel):
     why: str = Field(description="Explanation of why this mapping works — forces chain-of-thought grounding")
 
 
-class SceneArc(BaseModel):
-    scene_1_seed: str = Field(description="Visual seed for scene 1: the problem / entropy / cold start")
-    scene_2_seed: str = Field(description="Visual seed for scene 2: the solution emerging / first spark")
-    scene_3_seed: str = Field(description="Visual seed for scene 3: the crisis / stress test / parallel resolution")
-    scene_4_seed: str = Field(description="Visual seed for scene 4: the harmony / ecosystem in full bloom")
+class SceneSeed(BaseModel):
+    scene_number: int = Field(description="Scene number (1-indexed)")
+    dramatic_beat: str = Field(description="The dramatic purpose of this scene (e.g., 'cold start', 'the spark', 'crisis', 'harmony')")
+    visual_seed: str = Field(description="1-2 sentence visual concept for this scene")
 
 
 class CreativeBriefSchema(BaseModel):
     title: str = Field(description="Cinematic title for the short film")
     logline: str = Field(description="One-sentence pitch (under 200 characters)")
     symbol_map: List[SymbolMapping] = Field(description="Technical component → visual symbol mappings with rationale")
-    scene_arc: SceneArc = Field(description="Visual seeds for the 4-scene dramatic arc")
+    scene_arc: List[SceneSeed] = Field(description="Visual seeds for the dramatic arc (3-6 scenes)")
     tone: str = Field(description="Emotional arc description (e.g., 'Contemplative wonder building to triumphant revelation')")
     visual_anchors: str = Field(description="Color palette and atmosphere keywords (e.g., 'Deep space indigo, bioluminescent cyan, warm amber')")
     music_direction: str = Field(description="Single authoritative music/soundtrack description for the entire film")
@@ -85,16 +84,16 @@ class PromptArchitect:
                     "why": "Hermes's neutral alignment and multi-vendor philosophy mirrors a greenhouse ecosystem — diverse, interconnected, vendor-agnostic growth."
                 }
             ],
-            "scene_arc": {
-                "scene_1_seed": "A cluttered, dark repair bay — an exhausted engineer drops a critical component through the floor grates, unable to remember past solutions",
-                "scene_2_seed": "In the silent hours, the machine observes and writes — glowing parchment skill-documents emerge from the dust of failed attempts",
-                "scene_3_seed": "A cooling pipe bursts, alarms flash crimson — the crystalline core splits into parallel shards to handle multiple emergencies simultaneously",
-                "scene_4_seed": "Morning reveals a living greenhouse — holographic vines bearing fruit-like icons of automated scripts, engineer and machine gazing at a nebula"
-            },
+            "scene_arc": [
+                {"scene_number": 1, "dramatic_beat": "cold start", "visual_seed": "A cluttered, dark repair bay — an exhausted engineer drops a critical component through the floor grates, unable to remember past solutions"},
+                {"scene_number": 2, "dramatic_beat": "the spark", "visual_seed": "In the silent hours, the machine observes and writes — glowing parchment skill-documents emerge from the dust of failed attempts"},
+                {"scene_number": 3, "dramatic_beat": "crisis", "visual_seed": "A cooling pipe bursts, alarms flash crimson — the crystalline core splits into parallel shards to handle multiple emergencies simultaneously"},
+                {"scene_number": 4, "dramatic_beat": "harmony", "visual_seed": "Morning reveals a living greenhouse — holographic vines bearing fruit-like icons of automated scripts, engineer and machine gazing at a nebula"}
+            ],
             "tone": "Melancholic wonder building through quiet determination to harmonious revelation",
             "visual_anchors": "Solarpunk-meets-cyberpunk, bioluminescent amber and green accents, moody dark metallic interiors opening to cosmic vistas",
             "music_direction": "Contemplative ambient electronic soundtrack with organic cello swells, transitioning from sparse minimalism to a warm crescendo",
-            "narration_voice": "Documentary narrator — slow, deliberate, with deep gravitas. Awed by the machine's quiet devotion."
+            "narration_voice": "Cinematic film narrator — dramatic, with dynamic range. Intense whisper for mystery, powerful projection for triumph. NOT a flat documentary read."
         }
 
     def craft_brief(self, repo_analysis: dict, mock_mode: bool = False) -> dict:
@@ -148,18 +147,24 @@ class PromptArchitect:
                spread through data the way roots spread through soil, connecting
                everything beneath the surface."
 
-            2. SCENE ARC: Write 4 visual scene seeds (NOT full scenes — just the core
-               visual concept in 1-2 sentences each):
-               - Scene 1: The problem / entropy / cold start (before the system exists)
-               - Scene 2: The solution emerging (the core mechanism activating)
-               - Scene 3: The crisis (stress test where an advanced capability shines)
-               - Scene 4: The harmony (the complete ecosystem in full bloom)
+            2. SCENE ARC: Write between 3 and 6 visual scene seeds depending on repo
+               complexity. Simple utility repos → 3 scenes. Complex multi-agent systems → 5-6.
+               Each seed should include:
+               - scene_number: integer (1-indexed)
+               - dramatic_beat: the narrative purpose (e.g., 'cold start', 'the spark',
+                 'crisis', 'harmony', 'escalation', 'revelation')
+               - visual_seed: 1-2 sentence core visual concept
+
+               The arc MUST always start with a 'cold start' beat and end with a 'harmony'
+               beat. The middle beats are your creative choice based on the repo's story.
 
             3. SINGLE MUSIC DIRECTION: Write ONE definitive soundtrack description
                that fits the entire film. Build on the suggested genre: "{suggested_genre}".
                Keep it specific to this repo's personality — not generic "epic cinematic".
 
             4. NARRATION VOICE: Describe the narrator's vocal style and emotional register.
+               Think CINEMATIC FILM NARRATOR, not documentary. The voice should have
+               dramatic range — intensity for crisis, whisper for mystery, triumph for resolution.
 
             Return a strict JSON object.
             """
@@ -183,12 +188,10 @@ class PromptArchitect:
                         {"technical": s.technical, "symbol": s.symbol, "why": s.why}
                         for s in parsed.symbol_map
                     ],
-                    "scene_arc": {
-                        "scene_1_seed": parsed.scene_arc.scene_1_seed,
-                        "scene_2_seed": parsed.scene_arc.scene_2_seed,
-                        "scene_3_seed": parsed.scene_arc.scene_3_seed,
-                        "scene_4_seed": parsed.scene_arc.scene_4_seed,
-                    },
+                    "scene_arc": [
+                        {"scene_number": s.scene_number, "dramatic_beat": s.dramatic_beat, "visual_seed": s.visual_seed}
+                        for s in parsed.scene_arc
+                    ],
                     "tone": parsed.tone,
                     "visual_anchors": parsed.visual_anchors,
                     "music_direction": parsed.music_direction,

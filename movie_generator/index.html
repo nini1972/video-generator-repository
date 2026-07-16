@@ -630,13 +630,19 @@
 
         .storyboard-grid {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
             gap: 16px;
+        }
+
+        @media (max-width: 1200px) {
+            .storyboard-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
         }
 
         .storyboard-card {
             padding: 0;
-            overflow: hidden;
+            overflow: visible;
             display: flex;
             flex-direction: column;
             background: var(--bg-surface);
@@ -657,6 +663,7 @@
             position: relative;
             background: #020306;
             overflow: hidden;
+            border-radius: 16px 16px 0 0;
         }
 
         .storyboard-img {

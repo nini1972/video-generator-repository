@@ -76,8 +76,11 @@ class MusicGenerator:
             f"A {duration:.0f}-second piece of {genre} music. "
             f"Style: {style}. "
             f"The track should be {vocal_instruction}. "
-            f"This is background music for a short cinematic film — "
-            f"it should have a clear beginning, middle build-up, and gentle ending."
+            f"This is the SCORE for a cinematic short film — "
+            f"it MUST have dramatic emotional progression: "
+            f"begin sparse and atmospheric, build tension in the middle, "
+            f"swell to an emotional climax, then resolve warmly. "
+            f"NOT static ambient — dynamic, with clear dramatic arc and evolving intensity."
         )
 
         for model in self._MUSIC_MODELS:

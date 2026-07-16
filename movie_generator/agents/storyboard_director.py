@@ -19,6 +19,7 @@ class _StoryboardScene(BaseModel):
     visual_prompt: str
     narration_text: str
     creative_rationale: str  # Director's self-reflection: why these symbols were chosen
+    emotional_tone: str       # TTS emotional direction for this scene (e.g., 'somber, reflective')
 
 
 class _AudioDirection(BaseModel):
@@ -69,7 +70,8 @@ class StoryboardDirector:
                     "image_url": "https://r2-bucket.flowith.net/f/81d85c63c5c115db/silent_archive_digital_library_index_0.jpeg",
                     "video_url": "https://vg.flowith.net/tencent/1412218316-AigcVideoTask-1ce1c70bd45a69f4b4fce9bcd7be60a6t.mp4",
                     "narration_text": "In the cold corners of the repair bay, memory fades like steam. She is not alone.",
-                    "creative_rationale": "The dark, cluttered repair bay represents a codebase without persistent memory — past solutions lost. The crystalline core (Hermes) is the SQLite FTS5 system, glowing amber like stored knowledge waiting to be recalled."
+                    "creative_rationale": "The dark, cluttered repair bay represents a codebase without persistent memory — past solutions lost. The crystalline core (Hermes) is the SQLite FTS5 system, glowing amber like stored knowledge waiting to be recalled.",
+                    "emotional_tone": "somber, reflective, and quietly mysterious"
                 },
                 {
                     "scene_number": 2,
@@ -79,7 +81,8 @@ class StoryboardDirector:
                     "image_url": "https://r2-bucket.flowith.net/f/34f6e6adeb92c89c/gardener_synthesis_neon_seed_index_1.jpeg",
                     "video_url": "https://vg.flowith.net/tencent/1412218316-AigcVideoTask-30a5dae27c3c3bfa04458479f2cb7d03t.mp4",
                     "narration_text": "While she rests, luminous roots of memory extend into the bay. Yesterday's failures become tomorrow's autonomous skills.",
-                    "creative_rationale": "The root tendrils represent FTS5 search indexes spreading through data. The self-writing parchment is agentskills.io autonomously generating skill documents from observed patterns — knowledge growing organically without human intervention."
+                    "creative_rationale": "The root tendrils represent FTS5 search indexes spreading through data. The self-writing parchment is agentskills.io autonomously generating skill documents from observed patterns — knowledge growing organically without human intervention.",
+                    "emotional_tone": "curious and gently awed"
                 },
                 {
                     "scene_number": 3,
@@ -89,7 +92,8 @@ class StoryboardDirector:
                     "image_url": "https://r2-bucket.flowith.net/f/bb6c653e88a926d4/hermes_agent_holographic_interface_index_1.jpeg",
                     "video_url": "https://vg.flowith.net/tencent/1412218316-AigcVideoTask-d6865d18738546a6d8645a9befe49982t.mp4",
                     "narration_text": "When crisis strikes, there is no panic. The core divides — handling alarms, coolants, and code in perfect synchronicity.",
-                    "creative_rationale": "The shard-splitting visualises RPC parallel sub-agent delegation — one coordinator spawning independent workers. Four shards for four simultaneous tasks mirrors the ThreadPoolExecutor pattern in the actual code."
+                    "creative_rationale": "The shard-splitting visualises RPC parallel sub-agent delegation — one coordinator spawning independent workers. Four shards for four simultaneous tasks mirrors the ThreadPoolExecutor pattern in the actual code.",
+                    "emotional_tone": "urgent and intense"
                 },
                 {
                     "scene_number": 4,
@@ -99,7 +103,8 @@ class StoryboardDirector:
                     "image_url": "https://r2-bucket.flowith.net/f/3f5c3e5396a695fe/digital_forest_bloom_scene_index_2.jpeg",
                     "video_url": "https://vg.flowith.net/tencent/1412218316-AigcVideoTask-e00438f240db580a5839a2df59cf2b1et.mp4",
                     "narration_text": "Morning brings a living sanctuary. The tool has become a partner — together, they grow.",
-                    "creative_rationale": "The greenhouse ecosystem represents Hermes's multi-model, vendor-agnostic philosophy — diverse species (providers) thriving together. The fruit-icons are mature, reusable skills. Human and machine gazing outward symbolises neutral-alignment partnership."
+                    "creative_rationale": "The greenhouse ecosystem represents Hermes's multi-model, vendor-agnostic philosophy — diverse species (providers) thriving together. The fruit-icons are mature, reusable skills. Human and machine gazing outward symbolises neutral-alignment partnership.",
+                    "emotional_tone": "warm, triumphant, and deeply moved"
                 }
             ],
             "master_music_url": _FALLBACK_MUSIC_URL,
@@ -200,12 +205,21 @@ class StoryboardDirector:
             for s in symbol_map
         ])
 
-        # Build the scene arc seeds
-        scene_arc = creative_brief.get("scene_arc", {})
-        arc_ref = "\n".join([
-            f"  Scene {i}: {scene_arc.get(f'scene_{i}_seed', 'No seed provided')}"
-            for i in range(1, 5)
-        ])
+        # Build the scene arc seeds (dynamic length)
+        scene_arc = creative_brief.get("scene_arc", [])
+        if isinstance(scene_arc, list):
+            arc_ref = "\n".join([
+                f"  Scene {s.get('scene_number', i+1)} [{s.get('dramatic_beat', '?')}]: {s.get('visual_seed', 'No seed provided')}"
+                for i, s in enumerate(scene_arc)
+            ])
+            scene_count = len(scene_arc)
+        else:
+            # Legacy dict format fallback
+            arc_ref = "\n".join([
+                f"  Scene {i}: {scene_arc.get(f'scene_{i}_seed', 'No seed provided')}"
+                for i in range(1, 5)
+            ])
+            scene_count = 4
 
         try:
             prompt = f"""
@@ -242,7 +256,9 @@ class StoryboardDirector:
             2. NARRATION — Write a voiceover for each scene:
                - CRITICAL LENGTH RULE: 2-3 short sentences maximum (under 250 characters)
                - Must fit within the scene's duration_seconds at ~2.5 words/second
-               - Write as a documentary narrator — poetic, measured, awed
+               - Write as a CINEMATIC narrator — dramatic, emotionally charged, theatrical
+               - NOT a flat documentary reading — write for a movie trailer voice
+               - Use vivid, evocative language that creates tension, wonder, or triumph
                - Do NOT repeat the symbol map descriptions — describe what the VIEWER sees and feels
 
             3. CREATIVE RATIONALE — For each scene, explain WHY you chose these visuals.
@@ -250,7 +266,12 @@ class StoryboardDirector:
                a specific technical component from the symbol map. This proves the video
                genuinely represents the underlying codebase.
 
-            4. AUDIO DIRECTION:
+            4. EMOTIONAL TONE — For each scene, write a short emotional direction for the
+               narrator's voice (e.g., 'somber, reflective, and quietly mysterious').
+               This guides the text-to-speech model to match the scene's mood.
+               The emotional arc should build naturally across scenes.
+
+            5. AUDIO DIRECTION:
                - soundtrack_mode: 'instrumental_only', 'with_lyrics', or 'no_music'
                - speech_mode: 'full_narration', 'prologue_epilogue_only', or 'no_speech'
                - soundtrack_style: refine the music direction from the brief: "{creative_brief.get('music_direction', '')}"
@@ -260,8 +281,8 @@ class StoryboardDirector:
             Return a strict JSON object with keys:
             - aesthetic_style: string
             - audio_direction: object (soundtrack_mode, speech_mode, soundtrack_style)
-            - storyboards: array of 4 objects (scene_number, title, duration_seconds,
-              visual_prompt, narration_text, creative_rationale)
+            - storyboards: array of EXACTLY {scene_count} objects (scene_number, title,
+              duration_seconds, visual_prompt, narration_text, creative_rationale, emotional_tone)
             """
 
             response = self.client.models.generate_content(
@@ -290,6 +311,7 @@ class StoryboardDirector:
                             "visual_prompt": s.visual_prompt,
                             "narration_text": s.narration_text,
                             "creative_rationale": s.creative_rationale,
+                            "emotional_tone": s.emotional_tone,
                         }
                         for s in parsed.storyboards
                     ],
@@ -322,6 +344,9 @@ class StoryboardDirector:
             # Pull music direction from the creative brief
             suggested_genre = creative_brief.get("music_direction", "Cinematic Ambient")
 
+            # Extract narration voice direction from the creative brief
+            narration_voice = creative_brief.get("narration_voice", None)
+
             # ── Run image, speech, and music generation in parallel ───────────────
             print("[StoryboardDirector] Launching parallel asset generation (images + speech + music)...")
 
@@ -333,7 +358,8 @@ class StoryboardDirector:
                 future_speech = pool.submit(
                     self.speech_synth.synthesise_all_scenes,
                     result["storyboards"], assets_dir,
-                    speech_mode=active_speech_mode
+                    speech_mode=active_speech_mode,
+                    narration_voice=narration_voice,
                 )
                 future_music = pool.submit(
                     self.music_gen.generate_soundtrack,

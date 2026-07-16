@@ -74,9 +74,10 @@ class AgentPipeline:
         try:
             creative_brief = self.prompt_architect.craft_brief(analysis, mock_mode=use_mock)
             symbol_count = len(creative_brief.get("symbol_map", []))
+            scene_count = len(creative_brief.get("scene_arc", []))
             pipeline_log.append(
                 f"PromptArchitect completed in {time.time() - t1:.2f}s. "
-                f"Brief: '{creative_brief.get('title', 'Untitled')}' ({symbol_count} symbols mapped)."
+                f"Brief: '{creative_brief.get('title', 'Untitled')}' ({symbol_count} symbols mapped, {scene_count} scenes)."
             )
         except RuntimeError as e:
             pipeline_log.append(f"[STAGE 2 ERROR] {e}")

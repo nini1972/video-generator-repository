@@ -1,9 +1,8 @@
 import os
-import json
 import subprocess
 import tempfile
 import shutil
-from typing import List
+from typing import List, Optional, cast
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
@@ -29,7 +28,9 @@ class RepoAnalysisSchema(BaseModel):
 
 
 class RepoInvestigator:
-    def __init__(self, client: genai.Client = None):
+    client: Optional[genai.Client]
+
+    def __init__(self, client: Optional[genai.Client] = None):
         if client:
             self.client = client
         else:
@@ -103,8 +104,10 @@ class RepoInvestigator:
         If mock_mode is True or GEMINI_API_KEY is missing, returns cached Hermes Agent analysis.
         Raises RuntimeError on analysis failure so callers can surface it to the user.
         """
-        if mock_mode or not self.client:
+        if mock_mode or self.client is None:
             return self._get_mock_data()
+
+        client = self.client
 
         # Auto-clone GitHub / remote URLs to a local temp dir
         tmp_clone_dir = None
@@ -189,7 +192,7 @@ class RepoInvestigator:
             Return ONLY a valid JSON object. No markdown, no comments, no trailing commas.
             """
 
-            response = self.client.models.generate_content(
+            response = client.models.generate_content(
                 model='gemini-3.5-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
@@ -200,7 +203,7 @@ class RepoInvestigator:
 
             # Prefer the SDK's parsed object when available (response_schema path)
             if hasattr(response, 'parsed') and response.parsed is not None:
-                parsed = response.parsed
+                parsed = cast(RepoAnalysisSchema, response.parsed)
                 return {
                     "repo_name": parsed.repo_name,
                     "core_purpose": parsed.core_purpose,
@@ -217,6 +220,8 @@ class RepoInvestigator:
                 }
 
             # Fallback: robust multi-stage text parser
+            if response.text is None:
+                raise RuntimeError("[RepoInvestigator] GenAI responded with empty text.")
             return robust_parse_json(response.text)
 
         except RuntimeError:
