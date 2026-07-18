@@ -20,6 +20,9 @@ $env:GEMINI_API_KEY = "your-key-here"
 & ".\movie_generator\.venv\Scripts\python.exe" -m uvicorn movie_generator.server:app --host 0.0.0.0 --port 8000
 ```
 
+Open `http://127.0.0.1:8000` in your browser. Do not run `server.py` from
+inside the `movie_generator` directory because its package imports require the
+repository parent directory.
 
    [GitHub Repo]
          │
@@ -79,6 +82,13 @@ director = StoryboardDirector(free_form=True)
 Strict mode (default `free_form=False`) preserves the original deterministic
 behaviour for backward compatibility.
 
+## Offline Validation
 
-to verify: max_workers differ ;  emotional_tone=scene_emotion, voice=voice,  total_scenes: int = 4,
-when speech is used , have a long scene duration, otherwise the words will break.
+Run the no-network mode and audio checks from the project directory:
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m unittest discover -s tests -v
+```
+
+The suite verifies audio preference handling, no-speech behavior, 2-8 scene
+boundaries, and that music is ducked only while narration is audible.

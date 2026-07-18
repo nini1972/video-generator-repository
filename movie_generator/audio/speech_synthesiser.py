@@ -29,6 +29,7 @@ class SpeechSynthesiser:
     ]
     # Safety: truncate narration before TTS to prevent oversized audio files
     MAX_NARRATION_CHARS = 300
+    SCENE_VISUAL_TAIL_SECONDS = 0.75
 
     # Fallback emotional arc — used only when Director doesn't provide emotional_tone
     _EMOTIONAL_ARC_FALLBACK = {
@@ -216,6 +217,39 @@ class SpeechSynthesiser:
             futures = [executor.submit(_process_scene, s) for s in scenes]
             for f in futures:
                 f.result()  # Wait for all to complete
+
+        return scenes
+
+    def align_scene_durations_to_speech(self, scenes: list) -> list:
+        """Extends scene durations so generated narration is never truncated."""
+        for scene in scenes:
+            speech_path = scene.get("local_speech_path")
+            if not speech_path or not os.path.exists(speech_path):
+                continue
+
+            try:
+                with wave.open(speech_path, "rb") as audio_file:
+                    speech_duration = audio_file.getnframes() / audio_file.getframerate()
+            except (OSError, wave.Error, ZeroDivisionError) as error:
+                print(
+                    f"[TTS] Scene {scene.get('scene_number')}: "
+                    f"could not measure speech duration: {error}"
+                )
+                continue
+
+            planned_duration = float(scene.get("duration_seconds", 8.0))
+            aligned_duration = max(
+                planned_duration,
+                speech_duration + self.SCENE_VISUAL_TAIL_SECONDS,
+            )
+            scene["speech_duration_seconds"] = round(speech_duration, 2)
+            if aligned_duration > planned_duration:
+                scene["duration_seconds"] = round(aligned_duration, 2)
+                print(
+                    f"[TTS] Scene {scene.get('scene_number')}: extended visual "
+                    f"from {planned_duration:.2f}s to {aligned_duration:.2f}s "
+                    "to fit narration."
+                )
 
         return scenes
 

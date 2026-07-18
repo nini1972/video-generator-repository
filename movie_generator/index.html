@@ -1186,7 +1186,12 @@
             // Serve programmatically stitched mp4 or fallback seamlessly
             const repoParam = data.analysis && data.analysis.repo_name ? `&repo_name=${encodeURIComponent(data.analysis.repo_name)}` : '';
             theaterVideo.src = `${API_BASE}/api/assets/video?t=${new Date().getTime()}${repoParam}`;
-            theaterVideo.play();
+            const playback = theaterVideo.play();
+            if (playback !== undefined) {
+                playback.catch(() => {
+                    logConsole("Automatic playback was blocked. Use the video play control to start the movie.", "system");
+                });
+            }
 
             // 3. Render Symbol Map Grid (tech → visual symbol with rationale)
             metaphorSection.style.display = "flex";

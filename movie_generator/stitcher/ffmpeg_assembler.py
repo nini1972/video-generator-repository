@@ -239,8 +239,10 @@ class FFmpegAssembler:
             for scene in scenes:
                 img_file = scene["local_image_path"]
                 img_name = os.path.splitext(os.path.basename(img_file))[0]
+                scene_duration = float(scene.get("duration_seconds", 8.0))
+                duration_key = f"{scene_duration:.2f}".replace(".", "_")
                 clip_out = os.path.join(
-                    assets_dir, f"{img_name}_clip.mp4"
+                    assets_dir, f"{img_name}_{duration_key}s_clip.mp4"
                 )
                 
                 if os.path.exists(clip_out):
@@ -251,7 +253,7 @@ class FFmpegAssembler:
                 logs.append(f"  Rendering scene {scene.get('scene_number')} clip...")
                 ok = self._create_ken_burns_clip(
                     img_file,
-                    scene.get("duration_seconds", 8.0),
+                    scene_duration,
                     clip_out,
                 )
                 if ok:

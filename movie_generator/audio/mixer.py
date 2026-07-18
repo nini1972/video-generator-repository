@@ -11,6 +11,7 @@ import hashlib
 
 try:
     from pydub import AudioSegment
+    from pydub.silence import detect_nonsilent
     PYDUB_AVAILABLE = True
 except ImportError:
     PYDUB_AVAILABLE = False
@@ -153,20 +154,44 @@ class AudioMixer:
                               total_duration_ms: int) -> AudioSegment:
         """
         Overlays speech on music with automatic ducking.
-        Music volume drops by SPEECH_DUCK_DB during speech segments.
+        Music volume drops by SPEECH_DUCK_DB only during audible speech segments.
         """
         # Fit music to video duration
         music = self._fit_to_duration(music, total_duration_ms)
 
-        # Duck the music under the speech
-        ducked_music = music + self.SPEECH_DUCK_DB
-
         # Pad speech to match music length if needed
-        if len(speech) < len(ducked_music):
-            speech = speech + AudioSegment.silent(duration=len(ducked_music) - len(speech))
+        if len(speech) < len(music):
+            speech = speech + AudioSegment.silent(duration=len(music) - len(speech))
+
+        ducked_music = self._duck_music_for_speech(music, speech)
 
         # Overlay speech on ducked music
         return ducked_music.overlay(speech)
+
+    def _duck_music_for_speech(self, music: AudioSegment, speech: AudioSegment) -> AudioSegment:
+        """Reduces music only across non-silent narration intervals."""
+        narration_ranges = detect_nonsilent(
+            speech,
+            min_silence_len=200,
+            silence_thresh=-45,
+        )
+        if not narration_ranges:
+            return music
+
+        ducked_music = music
+        for start_ms, end_ms in narration_ranges:
+            start_ms = max(0, start_ms)
+            end_ms = min(len(ducked_music), end_ms)
+            if start_ms >= end_ms:
+                continue
+            ducked_segment = ducked_music[start_ms:end_ms] + self.SPEECH_DUCK_DB
+            ducked_music = (
+                ducked_music[:start_ms]
+                + ducked_segment
+                + ducked_music[end_ms:]
+            )
+
+        return ducked_music
 
     @staticmethod
     def _fit_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:

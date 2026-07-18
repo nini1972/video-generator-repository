@@ -355,21 +355,16 @@ class StoryboardDirector:
             active_soundtrack_mode = audio_dir.get("soundtrack_mode", "instrumental_only")
             active_soundtrack_style = audio_dir.get("soundtrack_style", "cinematic ambient")
 
-            # Compute total duration for the music generator
-            total_duration = sum(
-                s.get("duration_seconds", 8.0) for s in result["storyboards"]
-            )
-
             # Pull music direction from the creative brief
             suggested_genre = creative_brief.get("music_direction", "Cinematic Ambient")
 
             # Extract narration voice direction from the creative brief
             narration_voice = creative_brief.get("narration_voice", None)
 
-            # ── Run image, speech, and music generation in parallel ───────────────
-            print("[StoryboardDirector] Launching parallel asset generation (images + speech + music)...")
+            # ── Run image and speech generation in parallel ───────────────────────
+            print("[StoryboardDirector] Launching parallel asset generation (images + speech)...")
 
-            with ThreadPoolExecutor(max_workers=3) as pool:
+            with ThreadPoolExecutor(max_workers=2) as pool:
                 future_images = pool.submit(
                     self._generate_scene_images,
                     result["storyboards"], result["aesthetic_style"], assets_dir
@@ -380,16 +375,27 @@ class StoryboardDirector:
                     speech_mode=active_speech_mode,
                     narration_voice=narration_voice,
                 )
-                future_music = pool.submit(
-                    self.music_gen.generate_soundtrack,
-                    active_soundtrack_style, suggested_genre,
-                    active_soundtrack_mode, total_duration, assets_dir
-                )
 
                 # Collect results — images and speech modify scenes in-place
                 result["storyboards"] = future_images.result()
                 future_speech.result()  # scenes updated in-place with local_speech_path
-                local_music_path = future_music.result()
+
+            # Speech is generated as WAV, so its measured duration is authoritative.
+            # Align scene timing before both soundtrack generation and visual rendering.
+            result["storyboards"] = self.speech_synth.align_scene_durations_to_speech(
+                result["storyboards"]
+            )
+            total_duration = sum(
+                scene.get("duration_seconds", 8.0)
+                for scene in result["storyboards"]
+            )
+            local_music_path = self.music_gen.generate_soundtrack(
+                active_soundtrack_style,
+                suggested_genre,
+                active_soundtrack_mode,
+                total_duration,
+                assets_dir,
+            )
 
             # Store the local music path for the pipeline's AudioMixer
             result["local_music_path"] = local_music_path
