@@ -11,9 +11,9 @@ from movie_generator.agents.json_utils import robust_parse_json
 
 # ── Output schema — forces Gemini to produce well-formed JSON ─────────────────
 class AmbientProfile(BaseModel):
-    metaphor_theme: str         # e.g., "An ancient crystalline lighthouse routing ships through a dark storm"
-    suggested_vibe: str         # e.g., "Neon cyberpunk, moody lighting, desaturated industrial grays"
-    suggested_music_genre: str  # e.g., "High-energy Synthwave with heavy drum loops"
+    metaphor_theme: str         
+    suggested_vibe: str         
+    suggested_music_genre: str  
 
 class ArchitectureComponent(BaseModel):
     name: str
@@ -97,11 +97,16 @@ class RepoInvestigator:
             raise RuntimeError(f"[RepoInvestigator] git clone timed out for '{url}'.")
         return tmp_dir
 
-    def analyze(self, repo_path: str, mock_mode: bool = False) -> dict:
+    def analyze(
+        self,
+        repo_path: str,
+        mock_mode: bool = False,
+    ) -> dict:
         """
         Analyzes a repository directory or GitHub URL, reading key codebase structures and READMEs.
         If a GitHub URL is provided it is cloned to a temp directory first.
         If mock_mode is True or GEMINI_API_KEY is missing, returns cached Hermes Agent analysis.
+        Ambient suggestions remain open-ended inspiration for the PromptArchitect rather than a prescribed genre or visual treatment.
         Raises RuntimeError on analysis failure so callers can surface it to the user.
         """
         if mock_mode or self.client is None:
@@ -176,15 +181,18 @@ class RepoInvestigator:
                 )
 
             codebase_context = "\n---\n".join(file_summaries)
+            ambient_direction = (
+                "- Offer an optional metaphor, visual approach, and music approach that fit the repository. "
+                "- They may use any genre, medium, or emotional structure; DO NOT ASSUME science fiction, fantasy, photorealism, or a fixed color palette.\n"
+                "- Treat ambient as inspiration for the next agent, not a binding art direction."
+            )
             prompt = f"""
             You are a Senior Software Architect and a Creative Art Director working together.
             Analyze this codebase and translate its architecture into a highly visual, metaphorical story for a short video showcase.
 
             Step 1: Understand the tech. Name the project, its core purpose, critical modules, and languages used.
             Step 2: Choose an Ambient Music and Art Direction profile (ambient):
-              - Choose a grand metaphorical sci-fi or fantasy theme represented by the repo (e.g., an automated crystalline lighthouse, a fluid memory ocean).
-              - Choose a matching visual style / vibe / color scheme (e.g. solarpunk-meets-cyberpunk, dark retro-futurism, desaturated moody industrial grays).
-              - Suggest a music genre matching this vibe and purpose (e.g., contemplative ambient synthesizer soundtrack, dark underground techno with heavy drum loops).
+            {ambient_direction}
 
             Codebase context:
             {codebase_context}

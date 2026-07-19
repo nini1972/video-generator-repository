@@ -9,7 +9,7 @@ from movie_generator.stitcher.ffmpeg_assembler import FFmpegAssembler
 
 
 class AgentPipeline:
-    def __init__(self, gemini_api_key: str = None, ffmpeg_path: str = "ffmpeg", free_form: bool = False):
+    def __init__(self, gemini_api_key: str = None, ffmpeg_path: str = "ffmpeg"):
         # IMPORTANT: Set the env var BEFORE constructing agents so their
         # genai.Client() picks up the key from the environment.
         # We write to both GEMINI_API_KEY and GOOGLE_API_KEY because the SDK
@@ -25,13 +25,12 @@ class AgentPipeline:
                 os.environ["GOOGLE_API_KEY"] = env_key
 
         self.investigator = RepoInvestigator()
-        self.prompt_architect = PromptArchitect(free_form=free_form)
-        self.director = StoryboardDirector(free_form=free_form)
-        self.free_form = free_form
+        self.prompt_architect = PromptArchitect()
+        self.director = StoryboardDirector()
         self.mixer = AudioMixer()
         self.stitcher = FFmpegAssembler(ffmpeg_path=ffmpeg_path)
 
-    def run(self, repo_path: str, output_movie_filename: str = "master_movie.mp4", force_mock: bool = False, soundtrack_pref: str = "auto", speech_pref: str = "auto", free_form: Optional[bool] = None) -> dict:
+    def run(self, repo_path: str, output_movie_filename: str = "master_movie.mp4", force_mock: bool = False, soundtrack_pref: str = "auto", speech_pref: str = "auto") -> dict:
         """
         Runs the complete end-to-end movie generation agent workflow:
         RepoInvestigator -> PromptArchitect -> StoryboardDirector -> FFmpegAssembler.
@@ -41,7 +40,6 @@ class AgentPipeline:
         """
         pipeline_log = []
         pipeline_log.append("Initializing CineRepo Agent Pipeline...")
-        effective_free_form = self.free_form if free_form is None else free_form
 
         api_key_set = (
             (os.environ.get("GEMINI_API_KEY", "").strip() != "") or
@@ -57,29 +55,40 @@ class AgentPipeline:
             pipeline_log.append(f"Gemini API Key detected. Running live multi-agent cognitive pipeline on: '{repo_path}'")
 
         pipeline_log.append(
-            f"Creative mode: {'free-form' if effective_free_form else 'grounded story'}."
+            "Creative mode: free-form."
         )
+        if use_mock:
+            pipeline_log.append(
+                "Demo output is deterministic: it always uses the cached Hermes brief and "
+                "four-scene storyboard. Auto-Direct audio therefore resolves to its cached defaults."
+            )
 
         # ── Stage 1: Repo Analysis ─────────────────────────────────────────────
         pipeline_log.append("[STAGE 1] Launching RepoInvestigator Agent...")
         t0 = time.time()
         try:
-            analysis = self.investigator.analyze(repo_path, mock_mode=use_mock)
+            analysis = self.investigator.analyze(
+                repo_path,
+                mock_mode=use_mock,
+            )
             pipeline_log.append(
                 f"RepoInvestigator completed in {time.time() - t0:.2f}s. "
                 f"Project identified: '{analysis.get('repo_name', 'Unknown')}'"
             )
         except RuntimeError as e:
             pipeline_log.append(f"[STAGE 1 ERROR] {e}")
-            pipeline_log.append("Stage 1 degraded to demo data — fix the error above to enable real analysis.")
-            analysis = self.investigator.analyze(repo_path, mock_mode=True)
+            pipeline_log.append("Stage 1 degraded to cached demo data — subsequent output may be deterministic.")
+            analysis = self.investigator.analyze(
+                repo_path,
+                mock_mode=True,
+            )
 
         # ── Stage 2: Creative Brief Generation ─────────────────────────────────
         pipeline_log.append("[STAGE 2] Launching PromptArchitect Agent...")
         t1 = time.time()
         try:
             creative_brief = self.prompt_architect.craft_brief(
-                analysis, mock_mode=use_mock, free_form=effective_free_form
+                analysis, mock_mode=use_mock
             )
             symbol_count = len(creative_brief.get("symbol_map", []))
             scene_count = len(creative_brief.get("scene_arc", []))
@@ -89,9 +98,9 @@ class AgentPipeline:
             )
         except RuntimeError as e:
             pipeline_log.append(f"[STAGE 2 ERROR] {e}")
-            pipeline_log.append("Stage 2 degraded to demo creative brief.")
+            pipeline_log.append("Stage 2 degraded to cached demo creative brief — it contains four scene seeds.")
             creative_brief = self.prompt_architect.craft_brief(
-                analysis, mock_mode=True, free_form=effective_free_form
+                analysis, mock_mode=True
             )
 
         # Generate a slug from the repository name to namespace assets
@@ -112,7 +121,6 @@ class AgentPipeline:
                 repo_slug=repo_slug,
                 soundtrack_pref=soundtrack_pref,
                 speech_pref=speech_pref,
-                free_form=effective_free_form,
             )
             scene_count = len(storyboard.get("storyboards", []))
             pipeline_log.append(
@@ -121,14 +129,13 @@ class AgentPipeline:
             )
         except RuntimeError as e:
             pipeline_log.append(f"[STAGE 3 ERROR] {e}")
-            pipeline_log.append("Stage 3 degraded to demo storyboard.")
+            pipeline_log.append("Stage 3 degraded to cached demo storyboard — Auto-Direct uses instrumental music and full narration.")
             storyboard = self.director.direct(
                 creative_brief, 
                 mock_mode=True, 
                 repo_slug=None,
                 soundtrack_pref=soundtrack_pref,
                 speech_pref=speech_pref,
-                free_form=effective_free_form,
             )
 
         # ── Stage 3.5: Audio Mixing ────────────────────────────────────────────

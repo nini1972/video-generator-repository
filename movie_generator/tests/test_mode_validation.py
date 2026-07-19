@@ -12,6 +12,7 @@ if PROJECT_PARENT not in sys.path:
     sys.path.insert(0, PROJECT_PARENT)
 
 from movie_generator.agents.storyboard_director import StoryboardDirector
+from movie_generator.agents.prompt_architect import CreativeBriefSchema, PromptArchitect
 from movie_generator.audio.mixer import AudioMixer
 from movie_generator.audio.speech_synthesiser import SpeechSynthesiser
 
@@ -26,6 +27,31 @@ class ModeValidationTests(unittest.TestCase):
 
         self.assertEqual(storyboard["audio_direction"]["soundtrack_mode"], "no_music")
         self.assertEqual(storyboard["audio_direction"]["speech_mode"], "no_speech")
+
+    def test_mock_creative_brief_exposes_authoritative_directions(self):
+        brief = PromptArchitect(client=None)._get_mock_brief()
+
+        self.assertIn("visual_direction", brief)
+        self.assertIn("music_prompt", brief)
+        self.assertNotIn("visual_anchors", brief)
+        self.assertNotIn("music_direction", brief)
+
+    def test_creative_brief_schema_accepts_two_scene_arc(self):
+        brief = CreativeBriefSchema.model_validate({
+            "title": "Two Scenes",
+            "logline": "A compact creative test.",
+            "symbol_map": [],
+            "scene_arc": [
+                {"scene_number": 1, "visual_seed": "An opening image."},
+                {"scene_number": 2, "visual_seed": "A closing image."},
+            ],
+            "tone": "Quietly complete",
+            "visual_direction": "Ink on paper",
+            "music_prompt": "Sparse acoustic guitar, instrumental only",
+            "narration_voice": "Warm and restrained",
+        })
+
+        self.assertEqual(len(brief.scene_arc), 2)
 
     def test_storyboard_rejects_scene_arcs_outside_supported_range(self):
         director = StoryboardDirector(client=object())
@@ -67,6 +93,24 @@ class ModeValidationTests(unittest.TestCase):
 
         self.assertEqual(aligned_scenes[0]["speech_duration_seconds"], 2.25)
         self.assertEqual(aligned_scenes[0]["duration_seconds"], 3.0)
+
+    def test_abnormally_long_narration_is_not_used_for_scene_timing(self):
+        synthesiser = SpeechSynthesiser(client=None)
+        scenes = [{"scene_number": 1, "duration_seconds": 8.0}]
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            speech_path = os.path.join(output_dir, "scene_1_speech.wav")
+            exported_audio = AudioSegment.silent(duration=91_000).export(
+                speech_path,
+                format="wav",
+            )
+            exported_audio.close()
+            scenes[0]["local_speech_path"] = speech_path
+
+            aligned_scenes = synthesiser.align_scene_durations_to_speech(scenes)
+
+        self.assertIsNone(aligned_scenes[0]["local_speech_path"])
+        self.assertEqual(aligned_scenes[0]["duration_seconds"], 8.0)
 
     def test_music_is_ducked_only_during_audible_narration(self):
         mixer = AudioMixer()

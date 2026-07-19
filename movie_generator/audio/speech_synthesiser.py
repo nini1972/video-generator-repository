@@ -20,8 +20,8 @@ class SpeechSynthesiser:
     """Generates per-scene narration audio using Gemini's native audio generation."""
 
     # Cinematic voice options — Gemini prebuilt voices
-    # Charon: deep, authoritative — ideal for cinematic narration
-    VOICE_NARRATOR = "Charon"
+    # Aoede: warm, resonant female voice with dramatic range
+    VOICE_NARRATOR = "Aoede"  # Gemini prebuilt voice for cinematic narration
 
     _AUDIO_MODELS = [
         "gemini-2.5-flash-preview-tts",   # confirmed working
@@ -29,6 +29,7 @@ class SpeechSynthesiser:
     ]
     # Safety: truncate narration before TTS to prevent oversized audio files
     MAX_NARRATION_CHARS = 300
+    MAX_SPEECH_DURATION_SECONDS = 90
     SCENE_VISUAL_TAIL_SECONDS = 0.75
 
     # Fallback emotional arc — used only when Director doesn't provide emotional_tone
@@ -46,7 +47,7 @@ class SpeechSynthesiser:
 
     def synthesise_scene(self, narration_text: str, scene_num: int,
                          output_dir: str, voice: Optional[str] = None,
-                         total_scenes: int = 4,
+                         total_scenes: int,
                          narration_voice: Optional[str] = None,
                          emotional_tone: Optional[str] = None) -> str | None:
         """
@@ -57,7 +58,7 @@ class SpeechSynthesiser:
             narration_text: The narration text to speak
             scene_num: Scene number (1-indexed)
             output_dir: Directory to save the audio file
-            voice: Override voice name (default: Charon)
+            voice: Override voice name (default: Aoede)
             total_scenes: Total number of scenes for arc position
             narration_voice: Optional voice direction from the creative brief
             emotional_tone: Director-generated emotional direction for this scene
@@ -90,23 +91,24 @@ class SpeechSynthesiser:
         wav_path = os.path.join(output_dir, f"scene_{scene_num}_speech_{text_hash}.wav")
 
         if os.path.exists(wav_path):
-            print(f"[TTS] Scene {scene_num}: using cached speech ({text_hash}).")
-            return wav_path
+            if self._is_usable_speech(wav_path, scene_num, remove_invalid=True):
+                print(f"[TTS] Scene {scene_num}: using cached speech ({text_hash}).")
+                return wav_path
 
         print(f"[TTS] Scene {scene_num}: generating narration ({len(narration_trimmed)} chars)...")
 
         prompt = (
             f"You are {voice_direction}. "
-            f"You have a deep, resonant MALE voice with dramatic range. "
-            f"Read the following text aloud AS IF narrating a cinematic movie trailer. "
+            f"You have a velvet, whispered, and deeply warm FEMALE voice with an ambient, poetic range. "
+            f"Read the following text aloud AS IF narrating an abstract artistic piece about digital infrastructure. "
             f"Your emotional tone for this scene should be: {emotion} "
             f"IMPORTANT PERFORMANCE DIRECTION: "
-            f"Vary your pacing — speed up during tense moments, slow down for revelations. "
-            f"Use dynamic volume — whisper for mystery, project for triumph. "
-            f"Let emotion colour every word — this is NOT a flat documentary reading. "
-            f"Pause dramatically between sentences to let images breathe. "
-            f"Maintain the same deep male vocal character throughout — never switch to a female voice. "
-            f"Read every single word of the text — do not stop early or skip any part.\n\n"
+            f"Speak exceptionally slowly. Treat lines of code and data repositories like constellations. "
+            f"Vary your pacing — linger on technical terms as if they are ancient incantations. "
+            f"Use dynamic volume — whisper softly for mystery and complexity. "
+            f"Let emotion and atmosphere color every word — this is NOT a flat documentation or corporate video reading. "
+            f"Pause deeply and dramatically between clauses. "
+            f"Read every single word of the text exactly — do not omit punctuation cues.\n\n"
             f"{narration_trimmed}"
         )
 
@@ -154,9 +156,13 @@ class SpeechSynthesiser:
                             # Raw PCM (linear16, 24kHz, mono) — wrap in WAV container
                             self._write_pcm_as_wav(audio_bytes, wav_path)
 
-                        file_size_kb = len(audio_bytes) // 1024
-                        print(f"[TTS] Scene {scene_num}: saved successfully ({file_size_kb}KB).")
-                        return wav_path
+                        if self._is_usable_speech(wav_path, scene_num, remove_invalid=True):
+                            file_size_kb = len(audio_bytes) // 1024
+                            print(f"[TTS] Scene {scene_num}: saved successfully ({file_size_kb}KB).")
+                            return wav_path
+
+                        print(f"[TTS] Scene {scene_num}: {model} produced implausibly long audio. Retrying...")
+                        break
 
                 print(f"[TTS] Scene {scene_num}: {model} returned no audio part.")
 
@@ -227,14 +233,18 @@ class SpeechSynthesiser:
             if not speech_path or not os.path.exists(speech_path):
                 continue
 
-            try:
-                with wave.open(speech_path, "rb") as audio_file:
-                    speech_duration = audio_file.getnframes() / audio_file.getframerate()
-            except (OSError, wave.Error, ZeroDivisionError) as error:
+            scene_num = scene.get("scene_number", 0)
+            speech_duration = self._get_speech_duration(speech_path, scene_num)
+            if speech_duration is None:
+                scene["local_speech_path"] = None
+                continue
+
+            if speech_duration > self.MAX_SPEECH_DURATION_SECONDS:
                 print(
-                    f"[TTS] Scene {scene.get('scene_number')}: "
-                    f"could not measure speech duration: {error}"
+                    f"[TTS] Scene {scene_num}: ignoring {speech_duration:.2f}s narration; "
+                    f"maximum is {self.MAX_SPEECH_DURATION_SECONDS}s."
                 )
+                scene["local_speech_path"] = None
                 continue
 
             planned_duration = float(scene.get("duration_seconds", 8.0))
@@ -252,6 +262,27 @@ class SpeechSynthesiser:
                 )
 
         return scenes
+
+    def _is_usable_speech(self, speech_path: str, scene_num: int,
+                          remove_invalid: bool = False) -> bool:
+        """Returns whether a WAV has a plausible narration duration."""
+        duration = self._get_speech_duration(speech_path, scene_num)
+        if duration is not None and duration <= self.MAX_SPEECH_DURATION_SECONDS:
+            return True
+
+        if remove_invalid and os.path.exists(speech_path):
+            os.remove(speech_path)
+        return False
+
+    @staticmethod
+    def _get_speech_duration(speech_path: str, scene_num: int) -> float | None:
+        """Reads a WAV duration, returning None for corrupt or unreadable files."""
+        try:
+            with wave.open(speech_path, "rb") as audio_file:
+                return audio_file.getnframes() / audio_file.getframerate()
+        except (OSError, wave.Error, ZeroDivisionError) as error:
+            print(f"[TTS] Scene {scene_num}: could not measure speech duration: {error}")
+            return None
 
     def _get_fallback_emotion(self, scene_num: int, total_scenes: int) -> str:
         """

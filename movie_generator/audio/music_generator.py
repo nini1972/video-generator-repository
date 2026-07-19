@@ -36,14 +36,14 @@ class MusicGenerator:
             api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
             self.client = genai.Client(api_key=api_key) if api_key else None
 
-    def generate_soundtrack(self, style: str, genre: str, mode: str,
+    def generate_soundtrack(self, music_prompt: str, style_label: str, mode: str,
                             duration: float, output_dir: str) -> str | None:
         """
         Generates a background music track matching the creative direction.
 
         Args:
-            style:    Descriptive style from audio_direction (e.g., "contemplative ambient electronic")
-            genre:    Genre from screenplay (e.g., "Cinematic Cyber-Organic Ambient")
+            music_prompt: Direct creative-brief instruction for the soundtrack
+            style_label: Concise storyboard label for logging and cache identity
             mode:     "instrumental_only", "with_lyrics", or "no_music"
             duration: Target duration in seconds (derived from scene durations)
             output_dir: Directory to save the generated file
@@ -58,7 +58,7 @@ class MusicGenerator:
 
         # Content-hash filename
         style_hash = hashlib.sha256(
-            f"{style}|{genre}|{mode}|{duration:.0f}".encode("utf-8")
+            f"{music_prompt}|{style_label}|{mode}|{duration:.0f}".encode("utf-8")
         ).hexdigest()[:16]
         soundtrack_base_path = os.path.join(output_dir, f"soundtrack_{style_hash}")
         for cache_extension in self._AUDIO_EXTENSIONS:
@@ -67,7 +67,7 @@ class MusicGenerator:
                 print(f"[MusicGen] Using cached soundtrack ({style_hash}).")
                 return cached_path
 
-        print(f"[MusicGen] Generating {duration:.0f}s soundtrack: {style}...")
+        print(f"[MusicGen] Generating {duration:.0f}s soundtrack: {style_label}...")
 
         # Build the music generation prompt
         vocal_instruction = (
@@ -77,14 +77,11 @@ class MusicGenerator:
         )
 
         prompt = (
-            f"A {duration:.0f}-second piece of {genre} music. "
-            f"Style: {style}. "
+            f"Create a {duration:.0f}-second soundtrack for a short film. "
+            f"Creative direction: {music_prompt}. "
             f"The track should be {vocal_instruction}. "
-            f"This is the SCORE for a cinematic short film — "
-            f"it MUST have dramatic emotional progression: "
-            f"begin sparse and atmospheric, build tension in the middle, "
-            f"swell to an emotional climax, then resolve warmly. "
-            f"NOT static ambient — dynamic, with clear dramatic arc and evolving intensity."
+            "Honor the supplied creative direction for its genre, pacing, emotional shape, "
+            "and level of musical development."
         )
 
         for model in self._MUSIC_MODELS:

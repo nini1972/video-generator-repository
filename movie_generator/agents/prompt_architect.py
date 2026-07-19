@@ -16,6 +16,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
+from typing import Union
 from movie_generator.agents.json_utils import robust_parse_json
 
 
@@ -29,7 +30,7 @@ class SymbolMapping(BaseModel):
 
 class SceneSeed(BaseModel):
     scene_number: int = Field(default=1, description="Scene number (1-indexed)")
-    dramatic_beat: Optional[str] = Field(default=None, description="The dramatic purpose of this scene (e.g., 'cold start', 'the spark', 'crisis', 'harmony')")
+    dramatic_beat: Optional[str] = Field(default=None, description="The purpose of this scene")
     visual_seed: str = Field(description="1-2 sentence visual concept for this scene")
 
 
@@ -38,10 +39,10 @@ class CreativeBriefSchema(BaseModel):
     logline: str = Field(description="One-sentence pitch (under 200 characters)")
     symbol_map: List[SymbolMapping] = Field(description="Technical component → visual symbol mappings with rationale")
     scene_arc: List[SceneSeed] = Field(min_length=2, max_length=8, description="Visual seeds for a renderable 2-8 scene arc")
-    tone: str = Field(description="Emotional arc description (e.g., 'Contemplative wonder building to triumphant revelation')")
-    visual_anchors: str = Field(description="Color palette and atmosphere keywords (e.g., 'Deep space indigo, bioluminescent cyan, warm amber')")
-    music_direction: str = Field(description="Single authoritative music/soundtrack description for the entire film")
-    narration_voice: str = Field(description="Voice direction for narration (e.g., 'Documentary narrator — measured, poetic, awed')")
+    tone: str = Field(description="Emotional arc description for the short film, including pacing, mood, and character development")
+    visual_direction: str = Field(description="Reusable visual bible for the whole film: medium, palette, texture, composition, and motifs to preserve across scenes")
+    music_prompt: str = Field(description="Direct generation prompt for the complete soundtrack, including instrumentation, pacing, mood, and vocal guidance")
+    narration_voice: str = Field(description="Voice direction for narration ")
 
 
 class PromptArchitect:
@@ -49,14 +50,12 @@ class PromptArchitect:
     Crafts a creative brief that maps a repository's architecture to
     visual symbols, ensuring every metaphor is grounded in real code.
     """
-
-    def __init__(self, client: genai.Client = None, free_form: bool = False):
+    def __init__(self, client: Optional[genai.Client] = None):
         if client:
             self.client = client
         else:
             api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
             self.client = genai.Client(api_key=api_key) if api_key else None
-        self.free_form = free_form
 
     def _get_mock_brief(self) -> dict:
         """Returns a mock creative brief modelled on the Hermes Agent repo."""
@@ -92,20 +91,19 @@ class PromptArchitect:
                 {"scene_number": 4, "dramatic_beat": "harmony", "visual_seed": "Morning reveals a living greenhouse — holographic vines bearing fruit-like icons of automated scripts, engineer and machine gazing at a nebula"}
             ],
             "tone": "Melancholic wonder building through quiet determination to harmonious revelation",
-            "visual_anchors": "Solarpunk-meets-cyberpunk, bioluminescent amber and green accents, moody dark metallic interiors opening to cosmic vistas",
-            "music_direction": "Contemplative ambient electronic soundtrack with organic cello swells, transitioning from sparse minimalism to a warm crescendo",
+            "visual_direction": "Solarpunk-meets-cyberpunk, bioluminescent amber and green accents, moody dark metallic interiors opening to cosmic vistas, cinematic widescreen composition, tactile machinery and organic holographic growth",
+            "music_prompt": "Contemplative ambient electronic score with organic cello swells, starting sparse and intimate before opening into a warm, hopeful crescendo; instrumental only, no vocals",
             "narration_voice": "Cinematic film narrator — dramatic, with dynamic range. Intense whisper for mystery, powerful projection for triumph. NOT a flat documentary read."
         }
 
-    def craft_brief(self, repo_analysis: dict, mock_mode: bool = False, free_form: Optional[bool] = None) -> dict:
+    def craft_brief(self, analysis: dict, mock_mode: bool = False) -> dict:
         """
         Translates a RepoInvestigator's technical analysis into a creative brief.
-        Every visual symbol is explicitly tied to a real repo component.
+        Every visual symbol is tied to a real repo component.
 
         Args:
-            repo_analysis: Output from RepoInvestigator.analyze()
+            analysis: Output from RepoInvestigator.analyze()
             mock_mode: If True, returns the cached Hermes Agent brief
-            free_form: If True, relaxes structural constraints (defaults to self.free_form)
 
         Returns:
             Creative brief dict with symbol_map, scene_arc, tone, etc.
@@ -113,62 +111,53 @@ class PromptArchitect:
         Raises:
             RuntimeError on generation failure.
         """
-        # Use instance-level free_form if not explicitly provided
-        if free_form is None:
-            free_form = self.free_form
 
         if mock_mode or not self.client:
             return self._get_mock_brief()
 
         try:
-            # Extract ambient creative hints from Stage 1
-            ambient_info = repo_analysis.get("ambient", {})
-            metaphor_theme = ambient_info.get("metaphor_theme", "use a creative abstract metaphor")
-            suggested_vibe = ambient_info.get("suggested_vibe", "cinematic sci-fi moody lighting")
-            suggested_genre = ambient_info.get("suggested_music_genre", "cinematic ambient soundtrack")
+            # Stage 1 supplies inspiration, not binding production direction.
+            ambient_info = analysis.get("ambient", {})
+            metaphor_theme = ambient_info.get("metaphor_theme", "No prior metaphor suggested")
+            suggested_vibe = ambient_info.get("suggested_vibe", "No prior visual approach suggested")
+            suggested_genre = ambient_info.get("suggested_music_genre", "No prior music approach suggested")
 
             prompt = f"""
             You are a Creative Translator — a unique hybrid of a film production designer
             and a software architect. Your job is to translate a codebase's technical
             architecture into a visual language for a ~40-second cinematic short film.
+            You are also specialised in creating prompts for image-generation and music-generation models.
 
             Technical Analysis of the Repository:
-            {json.dumps(repo_analysis, indent=2)}
+            {json.dumps(analysis, indent=2)}
 
-            CREATIVE DIRECTION from the previous analysis:
-            - Metaphorical theme to develop: {metaphor_theme}
+            OPTIONAL INSPIRATION from the repository analysis:
+            - Metaphorical theme: {metaphor_theme}
             - Visual atmosphere/vibe: {suggested_vibe}
-            - Suggested music genre: {suggested_genre}
-            """
+            - Music approach: {suggested_genre}
+            These are suggestions, not requirements. You may reinterpret or discard them
+            when another direction better expresses the repository.
 
-            if free_form:
-                creative_contract = """
-                CREATIVE FREEDOM MODE:
-                - Choose a linear, non-linear, circular, or fragmented narrative structure.
-                - Write 2-8 scene seeds. Beats are optional and may be unconventional.
-                - Use the repository as inspiration rather than a scene-by-scene checklist.
-                - Include 1-4 symbol mappings only when they strengthen the film; each rationale is optional.
-                - Prefer a distinctive cinematic idea over literal visualizations of code.
-                """
-            else:
-                creative_contract = """
-                GROUNDED STORY MODE:
-                - Create a symbol mapping for every architecture component.
-                - Explain why every symbol maps to its corresponding technical behavior.
-                - Write 2-8 scene seeds that start with a 'cold start' beat and conclude with 'harmony'.
-                - Keep every major visual grounded in a real repository capability.
-                """
-
-            prompt += f"""
             YOUR TASK — Create a Creative Brief:
-            {creative_contract}
+
+            CREATIVE FREEDOM MODE:
+            - Choose a linear, non-linear, circular, or fragmented narrative structure.
+            - Write 2-8 scene seeds. Beats are optional and may be unconventional.
+            - Use the repository as inspiration rather than a scene-by-scene checklist.
+            - Include 1-4 symbol mappings only when they strengthen the film; each rationale is optional.
+            - Prefer a distinctive cinematic idea over literal visualizations of code.
+            - Do not assume science fiction, photorealism, a fixed palette, or a three-act emotional arc unless the repository meaning calls for it.
 
             Each scene seed must include a 1-indexed scene_number and a 1-2 sentence visual_seed.
             Use dramatic_beat when it improves clarity.
 
-            Write ONE definitive soundtrack description that fits the entire film. Build on
-            the suggested genre: "{suggested_genre}". Describe a cinematic narration voice
-            with enough dramatic range for mystery, tension, and resolution.
+            Return one reusable visual_direction that acts as the film's visual bible.
+
+            Return one music_prompt written directly for a music-generation model. It must
+            describe the desired sound, pacing, instrumentation, and vocal treatment without
+            assuming a genre or emotional structure unless your chosen concept needs one. This prompt will be used to generate the entire soundtrack for the short film.
+
+            Describe a narration_voice that matches the selected film concept.
 
             Return a strict JSON object.
             """
@@ -197,8 +186,8 @@ class PromptArchitect:
                         for s in parsed.scene_arc
                     ],
                     "tone": parsed.tone,
-                    "visual_anchors": parsed.visual_anchors,
-                    "music_direction": parsed.music_direction,
+                    "visual_direction": parsed.visual_direction,
+                    "music_prompt": parsed.music_prompt,
                     "narration_voice": parsed.narration_voice,
                 }
 

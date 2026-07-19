@@ -1,6 +1,7 @@
 import os
 import base64
 import hashlib
+from pyexpat import model
 from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel, Field
@@ -17,15 +18,15 @@ class _StoryboardScene(BaseModel):
     duration_seconds: float
     visual_prompt: str
     narration_text: str
-    creative_rationale: str = ""  # Optional in free-form mode
+    creative_rationale: str = ""  
     emotional_tone: str       # TTS emotional direction for this scene (e.g., 'somber, reflective')
 
 
 class _AudioDirection(BaseModel):
-    soundtrack_mode: str  # Options: "instrumental_only", "with_lyrics", "no_music"
     speech_mode: str      # Options: "full_narration", "prologue_epilogue_only", "no_speech"
-    soundtrack_style: str  # Description of desired artistic style, e.g. "somber synth with human operatic lyrics"
-
+    soundtrack_mode: str  # Options: "instrumental_only", "with_lyrics", "no_music"
+    # speech_style: str  # Description of desired artistic style, e.g. "somber synth with human operatic lyrics"
+    final_music_prompt: Optional[str] = None  # Optional prompt for music generation model
 
 class _StoryboardSchema(BaseModel):
     aesthetic_style: str
@@ -40,13 +41,14 @@ _FALLBACK_VIDEO_URL = "https://r2-bucket.flowith.net/concat_1779012993538996307.
 
 
 class StoryboardDirector:
-    def __init__(self, client: genai.Client = None, free_form: bool = False):
+    client: Optional[genai.Client]
+
+    def __init__(self, client: Optional[genai.Client] = None):
         if client:
             self.client = client
         else:
             api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
             self.client = genai.Client(api_key=api_key) if api_key else None
-        self.free_form = free_form
 
         # Audio generation agents — share the same client/API key
         self.speech_synth = SpeechSynthesiser(client=self.client)
@@ -182,32 +184,39 @@ class StoryboardDirector:
                 future.result()  # Wait for all images to complete
         return scenes
 
-    def direct(self, creative_brief: dict, mock_mode: bool = False, repo_slug: str = None, soundtrack_pref: str = "auto", speech_pref: str = "auto", free_form: Optional[bool] = None) -> dict:
+    def direct(self, creative_brief: dict, mock_mode: bool = False, repo_slug: str = None, soundtrack_pref: str = "auto", speech_pref: str = "auto") -> dict:
         """
         Creates a storyboard from a creative brief, with self-reflection.
-        The Director must justify every visual choice via creative_rationale.
+        The film Director must justify every visual choice via creative_rationale.
         If mock_mode is True or GEMINI_API_KEY is missing, returns the cached Flowith storyboard.
         Raises RuntimeError on generation failure so callers can surface it to the user.
         """
-        # Use instance-level free_form if not explicitly provided
-        if free_form is None:
-            free_form = self.free_form
-
         if mock_mode or not self.client:
             return self._get_mock_storyboard(soundtrack_pref=soundtrack_pref, speech_pref=speech_pref)
 
         pref_instructions = []
         if soundtrack_pref != "auto":
-            pref_instructions.append(f"- USER CONSTRAINT on soundtrack_mode: You MUST output '{soundtrack_pref}' as the soundtrack_mode in audio_direction.")
+            pref_instructions.append(f"USER CONSTRAINT on soundtrack_mode: You MUST output '{soundtrack_pref}' as the soundtrack_mode in audio_direction.")
+        else:
+            pref_instructions.append(
+                "AUTO-DIRECT soundtrack_mode: Choose the mode that best serves this specific film. Do not treat instrumental_only as a default; no_music and with_lyrics should be used when it fits more the concept."
+            )
         if speech_pref != "auto":
-            pref_instructions.append(f"- USER CONSTRAINT on speech_mode: You MUST output '{speech_pref}' as the speech_mode in audio_direction.")
+            pref_instructions.append(f"USER CONSTRAINT on speech_mode: You MUST output '{speech_pref}' as the speech_mode in audio_direction.")
+        else:
+            pref_instructions.append(
+                "AUTO-DIRECT speech_mode: Choose the mode that best serves this specific film. "
+                "Do not treat full_narration as a default; use prologue_epilogue_only or no_speechwhen the visual concept communicates more effectively without continuous narration."
+            )
         
         pref_prompt_str = "\n".join(pref_instructions) if pref_instructions else ""
 
         # Build the symbol map reference for the prompt
         symbol_map = creative_brief.get("symbol_map", [])
         symbol_ref = "\n".join([
-            f"  - {s['technical']} → {s['symbol']} (because: {s['why']})"
+            f"  - {s.get('technical', 'Unspecified')} → "
+            f"{s.get('symbol', 'Unspecified')} "
+            f"(because: {s.get('why') or 'No rationale supplied'})"
             for s in symbol_map
         ])
 
@@ -232,76 +241,72 @@ class StoryboardDirector:
                 f"[StoryboardDirector] Expected 2-8 scene seeds, received {scene_count}."
             )
 
-        if free_form:
-            symbol_instruction = """SYMBOLIC REFERENCE — Use the following motifs only when they strengthen the film. You may transform, combine, or omit them in favor of a more resonant visual idea:"""
-            visual_requirement = "- Use the creative brief as inspiration; literal component coverage is optional."
-            rationale_instruction = "Creative rationale is optional. Include it only when it clarifies a meaningful connection to the repository."
-            rationale_field = "creative_rationale: optional string"
-        else:
-            symbol_instruction = "SYMBOL MAP — You MUST use these visual symbols in your scenes:"
-            visual_requirement = "- MUST include the visual symbols from the symbol map above."
-            rationale_instruction = "For each scene, explain why the visuals connect to a specific technical component from the symbol map."
-            rationale_field = "creative_rationale: required string"
+        visual_direction = creative_brief.get(
+            "visual_direction",
+            creative_brief.get("visual_anchors", ""),
+        )
+        music_prompt = creative_brief.get(
+            "music_prompt",
+            creative_brief.get("music_direction", ""),
+        )
 
         try:
             prompt = f"""
-            You are the DIRECTOR — the final creative authority on this cinematic short film.
-            You have received a creative brief from the PromptArchitect. Your job is to
+            You are the Film Director — the final creative authority on this cinematic short film on the reflection of a Github repository.
+            You have received a creative brief from the PromptArchitect. You are not obliged to follow the brief literally. It can serve as directive, but you have the final creative authority. Your job is to
             transform it into a production-ready storyboard with precise visual directives,
             timing, narration, and audio configuration.
-
+            In auto-mode you have the total freedom to choose the soundtrack_mode and speech_mode that best serve the film's concept. You are not obliged to use speech_mode, you can choose to use music with lyrics instead of narration, or no music at all. You are not obliged to use the visual direction, you can choose to use a different visual style that better serves the film's concept. You are not obliged to use the music prompt, you can choose to use a different music style that better serves the film's concept.
+            The film should be between around 40 seconds in total duration, with each scene lasting between 5 and 15 seconds. The film should have a clear narrative arc, with a beginning, middle, and end. The film should have a consistent visual style, with a clear color palette and lighting scheme. The film should have a consistent audio style, with a clear soundtrack and narration style. The film should have a consistent emotional tone, with a clear emotional arc.
             CREATIVE BRIEF:
             Title: {creative_brief.get('title', 'Untitled')}
             Logline: {creative_brief.get('logline', '')}
             Tone: {creative_brief.get('tone', '')}
-            Visual Anchors: {creative_brief.get('visual_anchors', '')}
-            Music Direction: {creative_brief.get('music_direction', '')}
+            Visual Direction: {visual_direction}
+            Music Prompt: {music_prompt}
             Narration Voice: {creative_brief.get('narration_voice', '')}
 
-            {symbol_instruction}
-{symbol_ref}
+            SYMBOLIC REFERENCE — Use motifs only when they strengthen the film's narrative and emotional impact.
+            {symbol_ref}
 
             SCENE ARC SEEDS — Develop each scene from these starting points:
-{arc_ref}
+            {arc_ref}
 
-            YOUR DIRECTIVES:
+            YOUR DIRECTIVES to follow in crafting the storyboard:
 
-            1. VISUAL PROMPTS — For each scene, write an ultra-detailed prompt optimized
-               for text-to-image diffusion models (Imagen 3). Follow this structure:
-               - Start with shot type: "Wide establishing shot", "Close-up", "Macro detail"
-               - Include lighting: "dramatic rim lighting", "golden hour backlight"
-               - Include atmosphere: "volumetric fog", "particle effects", "lens flare"
-               - End with style anchors: "cinematic, 16:9 aspect ratio, photorealistic"
-               {visual_requirement}
-               - Do NOT include text, UI, typography, or watermarks in the image
+            1. VISUAL PROMPTS:
+              - For each scene, write an ultra-detailed prompt optimized for the image-generation model.
+              - Choose the shot language that serves each scene; do not assume photorealism or conventional camera grammar.
+              - Preserve 16:9 composition and exclude visible text, UI, typography, and watermarks.
+              - Use the creative brief as inspiration; literal component coverage is optional.
+            
+            2. NARRATION (when you choose to use speech_mode):
+               - Write a voiceover for each scene in line with the storyboard's emotional arc. Keep it concise, cinematic, and evocative.
+               - Keep it under 250 characters and sized for the planned scene duration.
+               - Describe what the viewer experiences rather than restating code concepts.
 
-            2. NARRATION — Write a voiceover for each scene:
-               - CRITICAL LENGTH RULE: 2-3 short sentences maximum (under 250 characters)
-               - Must fit within the scene's duration_seconds at ~2.5 words/second
-               - Write as a CINEMATIC narrator — dramatic, emotionally charged, theatrical
-               - NOT a flat documentary reading — write for a movie trailer voice
-               - Use vivid, evocative language that creates tension, wonder, or triumph
-               - Do NOT repeat the symbol map descriptions — describe what the VIEWER sees and feels
+            3. CREATIVE RATIONALE — Creative rationale is optional. Include it only when it clarifies a meaningful connection to the repository.
 
-                3. CREATIVE RATIONALE — {rationale_instruction}
-
-            4. EMOTIONAL TONE — For each scene, write a short emotional direction for the
-               narrator's voice (e.g., 'somber, reflective, and quietly mysterious').
-               This guides the text-to-speech model to match the scene's mood.
-               The emotional arc should build naturally across scenes.
+            4. EMOTIONAL TONE 
+               - For each scene, write a short emotional direction for the narrator's voice (e.g., 'somber, reflective, and quietly mysterious').
+               - This guides the text-to-speech model to match the scene's mood.
+               - Keep it coherent with the chosen film structure; it need not follow a conventional escalating arc.
 
             5. AUDIO DIRECTION:
+               - Decide soundtrack and speech modes independently based on the film concept.              
                - soundtrack_mode: 'instrumental_only', 'with_lyrics', or 'no_music'
                - speech_mode: 'full_narration', 'prologue_epilogue_only', or 'no_speech'
-               - soundtrack_style: refine the music direction from the brief: "{creative_brief.get('music_direction', '')}"
+               - soundtrack_style: a concise label derived from the music prompt: "{music_prompt}"
+               - final_music_prompt: optional, if you want to provide a more detailed prompt for the music-generation model. Otherwise, the music prompt from the creative brief will be used.
+              
 
             {pref_prompt_str}
 
             Return a strict JSON object with keys:
             - aesthetic_style: string
-            - audio_direction: object (soundtrack_mode, speech_mode, soundtrack_style)
+            - audio_direction: object (soundtrack_mode, speech_mode, soundtrack_style, final_music_prompt: optional string)
             - storyboards: array of EXACTLY {scene_count} objects (scene_number, title,
-                            duration_seconds, visual_prompt, narration_text, {rationale_field}, emotional_tone)
+                            duration_seconds, visual_prompt, narration_text, creative_rationale: optional string, emotional_tone)
             """
 
             response = self.client.models.generate_content(
@@ -319,8 +324,9 @@ class StoryboardDirector:
                     "aesthetic_style": parsed.aesthetic_style,
                     "audio_direction": {
                         "soundtrack_mode": parsed.audio_direction.soundtrack_mode,
-                        "speech_mode": parsed.audio_direction.speech_mode,
                         "soundtrack_style": parsed.audio_direction.soundtrack_style,
+                        "speech_mode": parsed.audio_direction.speech_mode,
+                        "final_music_prompt": parsed.audio_direction.final_music_prompt,
                     },
                     "storyboards": [
                         {
@@ -354,9 +360,7 @@ class StoryboardDirector:
             active_speech_mode = audio_dir.get("speech_mode", "full_narration")
             active_soundtrack_mode = audio_dir.get("soundtrack_mode", "instrumental_only")
             active_soundtrack_style = audio_dir.get("soundtrack_style", "cinematic ambient")
-
-            # Pull music direction from the creative brief
-            suggested_genre = creative_brief.get("music_direction", "Cinematic Ambient")
+            final_music_prompt = audio_dir.get("final_music_prompt")
 
             # Extract narration voice direction from the creative brief
             narration_voice = creative_brief.get("narration_voice", None)
@@ -390,8 +394,8 @@ class StoryboardDirector:
                 for scene in result["storyboards"]
             )
             local_music_path = self.music_gen.generate_soundtrack(
+                final_music_prompt or creative_brief.get("music_prompt", ""),
                 active_soundtrack_style,
-                suggested_genre,
                 active_soundtrack_mode,
                 total_duration,
                 assets_dir,

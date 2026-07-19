@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
@@ -26,7 +27,7 @@ class RunPipelineRequest(BaseModel):
     force_mock: bool = False
     soundtrack_pref: str = "auto"
     speech_pref: str = "auto"
-    free_form: bool = False
+    free_form: Optional[bool] = None
 
 @app.get("/")
 def read_root():
@@ -61,7 +62,6 @@ def run_pipeline(req: RunPipelineRequest):
             force_mock=req.force_mock,
             soundtrack_pref=req.soundtrack_pref,
             speech_pref=req.speech_pref,
-            free_form=req.free_form,
         )
         return result
     except Exception as e:
