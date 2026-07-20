@@ -47,7 +47,7 @@ class SpeechSynthesiser:
 
     def synthesise_scene(self, narration_text: str, scene_num: int,
                          output_dir: str, voice: Optional[str] = None,
-                         total_scenes: int,
+                         total_scenes: int = 4,
                          narration_voice: Optional[str] = None,
                          emotional_tone: Optional[str] = None) -> str | None:
         """

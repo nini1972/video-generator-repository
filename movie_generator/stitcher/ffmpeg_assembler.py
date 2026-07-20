@@ -126,9 +126,22 @@ class FFmpegAssembler:
             output_path,
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, timeout=180)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                timeout=180
+            )
+            if result.returncode != 0:
+                print(f"[FFmpeg] _create_ken_burns_clip failed with code {result.returncode}.")
+                if result.stderr:
+                    print(f"[FFmpeg] stderr: {result.stderr.decode('utf-8', errors='ignore')}")
             return result.returncode == 0
-        except Exception:
+        except subprocess.TimeoutExpired:
+            print(f"[FFmpeg] _create_ken_burns_clip timed out after 180s.")
+            return False
+        except Exception as e:
+            print(f"[FFmpeg] Exception running FFmpeg: {e}")
             return False
 
     def _concatenate_video_clips(
@@ -149,9 +162,19 @@ class FFmpegAssembler:
                 "-c", "copy",
                 output_path,
             ]
-            result = subprocess.run(cmd, capture_output=True, timeout=300)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                timeout=300
+            )
+            if result.returncode != 0:
+                print(f"[FFmpeg] _concatenate_video_clips failed with code {result.returncode}.")
+                if result.stderr:
+                    print(f"[FFmpeg] stderr: {result.stderr.decode('utf-8', errors='ignore')}")
             return result.returncode == 0
-        except Exception:
+        except Exception as e:
+            print(f"[FFmpeg] Concatenation failed with exception: {e}")
             return False
         finally:
             if os.path.exists(concat_list):
@@ -300,7 +323,13 @@ class FFmpegAssembler:
             if ffmpeg_ok:
                 try:
                     logs.append("Executing program assembly in sub-process...")
-                    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=True)
+                    result = subprocess.run(
+                        ffmpeg_cmd,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        stdin=subprocess.DEVNULL
+                    )
                     logs.append("FFmpeg process completed successfully!")
                     return {
                         "success": True,
@@ -391,7 +420,13 @@ class FFmpegAssembler:
         if ffmpeg_ok:
             try:
                 logs.append("Executing program assembly in sub-process...")
-                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=True)
+                result = subprocess.run(
+                    ffmpeg_cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    stdin=subprocess.DEVNULL
+                )
                 logs.append("FFmpeg process completed successfully!")
                 return {
                     "success": True,

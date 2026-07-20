@@ -25,6 +25,7 @@ class _StoryboardScene(BaseModel):
 class _AudioDirection(BaseModel):
     speech_mode: str      # Options: "full_narration", "prologue_epilogue_only", "no_speech"
     soundtrack_mode: str  # Options: "instrumental_only", "with_lyrics", "no_music"
+    soundtrack_style: str  # Concise label derived from the music prompt
     # speech_style: str  # Description of desired artistic style, e.g. "somber synth with human operatic lyrics"
     final_music_prompt: Optional[str] = None  # Optional prompt for music generation model
 

@@ -36,13 +36,13 @@ class MusicGenerator:
             api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
             self.client = genai.Client(api_key=api_key) if api_key else None
 
-    def generate_soundtrack(self, music_prompt: str, style_label: str, mode: str,
+    def generate_soundtrack(self, final_music_prompt: str, style_label: str, mode: str,
                             duration: float, output_dir: str) -> str | None:
         """
         Generates a background music track matching the creative direction.
 
         Args:
-            music_prompt: Direct creative-brief instruction for the soundtrack
+            final_music_prompt: Direct creative-brief instruction for the soundtrack
             style_label: Concise storyboard label for logging and cache identity
             mode:     "instrumental_only", "with_lyrics", or "no_music"
             duration: Target duration in seconds (derived from scene durations)
@@ -58,7 +58,7 @@ class MusicGenerator:
 
         # Content-hash filename
         style_hash = hashlib.sha256(
-            f"{music_prompt}|{style_label}|{mode}|{duration:.0f}".encode("utf-8")
+            f"{final_music_prompt}|{style_label}|{mode}|{duration:.0f}".encode("utf-8")
         ).hexdigest()[:16]
         soundtrack_base_path = os.path.join(output_dir, f"soundtrack_{style_hash}")
         for cache_extension in self._AUDIO_EXTENSIONS:
@@ -78,7 +78,7 @@ class MusicGenerator:
 
         prompt = (
             f"Create a {duration:.0f}-second soundtrack for a short film. "
-            f"Creative direction: {music_prompt}. "
+            f"Creative direction: {final_music_prompt}. "
             f"The track should be {vocal_instruction}. "
             "Honor the supplied creative direction for its genre, pacing, emotional shape, "
             "and level of musical development."
