@@ -6,6 +6,7 @@ from movie_generator.agents.prompt_architect import PromptArchitect
 from movie_generator.agents.storyboard_director import StoryboardDirector
 from movie_generator.audio.mixer import AudioMixer
 from movie_generator.stitcher.ffmpeg_assembler import FFmpegAssembler
+from movie_generator.stitcher.showcase_exporter import export_static_showcase
 
 
 class AgentPipeline:
@@ -197,6 +198,13 @@ class AgentPipeline:
         for st_log in stitch_result.get("logs", []):
             pipeline_log.append(f"  > {st_log}")
 
+        # ── Showcase Export ──────────────────────────────────────────────────
+        try:
+            showcase_path = export_static_showcase(master_bundle, assets_dir)
+            pipeline_log.append(f"Portable HTML showcase website generated: {os.path.basename(showcase_path)}")
+        except Exception as e:
+            pipeline_log.append(f"[Showcase Export Error] {e}")
+
         # ── Final Response ─────────────────────────────────────────────────────
         return {
             "success": True,
@@ -204,6 +212,7 @@ class AgentPipeline:
             "analysis": analysis,
             "creative_brief": creative_brief,
             "storyboard": storyboard,
+            "showcase_url": f"/assets/target_repos/{repo_slug}/showcase.html" if repo_slug else "/assets/showcase.html",
             "stitch_result": {
                 "success": stitch_result.get("success"),
                 "output_movie": output_movie_filename,

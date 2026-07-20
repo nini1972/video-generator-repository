@@ -3,11 +3,17 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from movie_generator.agent_pipeline import AgentPipeline
 from movie_generator.stitcher.ffmpeg_assembler import FFmpegAssembler
 
 app = FastAPI(title="CineRepo Server", description="Cognitive agent pipeline turning codebases into short cinematic films.")
+
+# Mount assets directory as static files to allow direct access to showcase.html and relative files
+base_assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "assets"))
+os.makedirs(base_assets_dir, exist_ok=True)
+app.mount("/assets", StaticFiles(directory=base_assets_dir), name="assets")
 
 # Lightweight singleton for status checks — avoids constructing genai.Client on every poll
 _ffmpeg_checker = FFmpegAssembler()

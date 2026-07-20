@@ -963,6 +963,14 @@
                     <span class="spec-label">Styling Theme</span>
                     <span class="spec-value" id="movieSpecAesthetic" style="color: var(--accent-cyan);"><i class="fa-solid fa-palette"></i> Cyber-Organic</span>
                 </div>
+                <div class="spec-item" id="showcaseLinkContainer" style="display: none;">
+                    <span class="spec-label">Share Showcase</span>
+                    <span class="spec-value">
+                        <a id="showcaseLink" href="#" target="_blank" style="color: var(--accent-gold); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 700;">
+                            <i class="fa-solid fa-share-nodes"></i> Open Web Page
+                        </a>
+                    </span>
+                </div>
             </div>
 
             <!-- Story Metaphor Section -->
@@ -1009,6 +1017,8 @@
         const movieSpecAesthetic = document.getElementById("movieSpecAesthetic");
         const metaphorGrid = document.getElementById("metaphorGrid");
         const storyboardGrid = document.getElementById("storyboardGrid");
+        const showcaseLinkContainer = document.getElementById("showcaseLinkContainer");
+        const showcaseLink = document.getElementById("showcaseLink");
 
         const nodes = [
             document.getElementById("node1"),
@@ -1167,6 +1177,14 @@
                 totalDuration += sb.duration_seconds || 8;
             });
             movieSpecDuration.innerHTML = `<i class="fa-regular fa-clock"></i> ${totalDuration.toFixed(1)} seconds`;
+
+            // 1b. Showcase Link Update
+            if (data.showcase_url) {
+                showcaseLinkContainer.style.display = "flex";
+                showcaseLink.href = `${API_BASE}${data.showcase_url}`;
+            } else {
+                showcaseLinkContainer.style.display = "none";
+            }
 
             // 2. Play Video in Custom Player
             theaterPlaceholder.style.display = "none";
