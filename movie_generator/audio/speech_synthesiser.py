@@ -24,12 +24,12 @@ class SpeechSynthesiser:
     VOICE_NARRATOR = "Aoede"  # Gemini prebuilt voice for cinematic narration
 
     _AUDIO_MODELS = [
-        "gemini-2.5-flash-preview-tts",   # confirmed working
-        "gemini-3.1-flash-tts",            # future availability
+        "gemini-3.8-flash-tts",
+        "gemini-3.8-flash-lite-tts",
     ]
     # Safety: truncate narration before TTS to prevent oversized audio files
     MAX_NARRATION_CHARS = 300
-    MAX_SPEECH_DURATION_SECONDS = 90
+    MAX_SPEECH_DURATION_SECONDS = 30
     SCENE_VISUAL_TAIL_SECONDS = 0.75
 
     # Fallback emotional arc — used only when Director doesn't provide emotional_tone
@@ -43,7 +43,12 @@ class SpeechSynthesiser:
     def __init__(self, client: Optional[genai.Client] = None):
         self.client: Optional[genai.Client]
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        self.client = client or (genai.Client(api_key=api_key) if api_key else None)
+        if client is not None:
+            self.client = client
+        elif api_key:
+            self.client = genai.Client(api_key=api_key, http_options={"api_version": "v1beta"})
+        else:
+            self.client = None
 
     def synthesise_scene(self, narration_text: str, scene_num: int,
                          output_dir: str, voice: Optional[str] = None,
@@ -97,74 +102,81 @@ class SpeechSynthesiser:
 
         print(f"[TTS] Scene {scene_num}: generating narration ({len(narration_trimmed)} chars)...")
 
-        prompt = (
-            f"You are {voice_direction}. "
-            f"You have a velvet, whispered, and deeply warm FEMALE voice with an ambient, poetic range. "
-            f"Read the following text aloud AS IF narrating an abstract artistic piece about digital infrastructure. "
-            f"Your emotional tone for this scene should be: {emotion} "
-            f"IMPORTANT PERFORMANCE DIRECTION: "
-            f"Speak exceptionally slowly. Treat lines of code and data repositories like constellations. "
-            f"Vary your pacing — linger on technical terms as if they are ancient incantations. "
-            f"Use dynamic volume — whisper softly for mystery and complexity. "
-            f"Let emotion and atmosphere color every word — this is NOT a flat documentation or corporate video reading. "
-            f"Pause deeply and dramatically between clauses. "
-            f"Read every single word of the text exactly — do not omit punctuation cues.\n\n"
-            f"{narration_trimmed}"
+        style_instruction = (
+            f"{voice_direction}; warm, velvet female narrator; {emotion}; "
+            f"slow, atmospheric cinematic pacing with dramatic pauses between clauses"
         )
 
         for model in self._AUDIO_MODELS:
             try:
-                response = self.client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_modalities=["AUDIO"],
-                        speech_config=types.SpeechConfig(
-                            voice_config=types.VoiceConfig(
-                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                    voice_name=voice
-                                )
-                            )
-                        ),
-                    ),
-                )
+                audio_bytes: bytes | None = None
+                mime_type = ""
 
-                # Guard against empty/filtered response
-                if (not response.candidates
-                        or not response.candidates[0].content
-                        or not response.candidates[0].content.parts):
-                    print(f"[TTS] Scene {scene_num}: {model} returned empty response (possibly filtered). Retrying...")
+                if hasattr(self.client, "interactions"):
+                    interaction = self.client.interactions.create(
+                        model=model,
+                        input=[{
+                            "type": "user_input",
+                            "content": [{
+                                "type": "text",
+                                "text": narration_trimmed,
+                                "annotations": [{
+                                    "type": "speech_metadata",
+                                    "style": style_instruction,
+                                }],
+                            }],
+                        }],
+                        response_format={"type": "audio"},
+                        generation_config={
+                            "speech_config": [{"voice": voice}],
+                        },
+                    )
+                    out_audio = getattr(interaction, "output_audio", None)
+                    if out_audio is not None and getattr(out_audio, "data", None):
+                        raw_data = out_audio.data
+                        audio_bytes = base64.b64decode(raw_data) if isinstance(raw_data, str) else bytes(raw_data)
+                        mime_type = str(getattr(out_audio, "mime_type", "") or "audio/wav")
+                else:
+                    response = self.client.models.generate_content(
+                        model=model,
+                        contents=narration_trimmed,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["AUDIO"],
+                            speech_config=types.SpeechConfig(
+                                voice_config=types.VoiceConfig(
+                                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                        voice_name=voice
+                                    )
+                                )
+                            ),
+                        ),
+                    )
+                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                        for part in response.candidates[0].content.parts:
+                            if part.inline_data is not None and part.inline_data.data is not None:
+                                raw_data = part.inline_data.data
+                                audio_bytes = base64.b64decode(raw_data) if isinstance(raw_data, str) else bytes(raw_data)
+                                mime_type = str(getattr(part.inline_data, "mime_type", "") or "")
+                                break
+
+                if not audio_bytes:
+                    print(f"[TTS] Scene {scene_num}: {model} returned empty audio response. Retrying...")
                     continue
 
-                # Extract audio data from response
-                for part in response.candidates[0].content.parts:
-                    inline_data = part.inline_data
-                    if inline_data is not None and inline_data.data is not None:
-                        audio_data = inline_data.data
-                        if isinstance(audio_data, str):
-                            audio_bytes = base64.b64decode(audio_data)
-                        else:
-                            audio_bytes = bytes(audio_data)
+                # Save audio — handle both WAV (RIFF) and raw PCM formats
+                if mime_type.startswith("audio/wav") or audio_bytes[:4] == b"RIFF":
+                    with open(wav_path, "wb") as f:
+                        f.write(audio_bytes)
+                else:
+                    # Raw PCM (linear16, 24kHz, mono) — wrap in WAV container
+                    self._write_pcm_as_wav(audio_bytes, wav_path)
 
-                        mime_type = str(getattr(inline_data, 'mime_type', '') or '')
+                if self._is_usable_speech(wav_path, scene_num, remove_invalid=True):
+                    file_size_kb = len(audio_bytes) // 1024
+                    print(f"[TTS] Scene {scene_num}: saved successfully ({file_size_kb}KB).")
+                    return wav_path
 
-                        # Save audio — handle both WAV and raw PCM formats
-                        if mime_type.startswith("audio/wav") or audio_bytes[:4] == b'RIFF':
-                            with open(wav_path, "wb") as f:
-                                f.write(audio_bytes)
-                        else:
-                            # Raw PCM (linear16, 24kHz, mono) — wrap in WAV container
-                            self._write_pcm_as_wav(audio_bytes, wav_path)
-
-                        if self._is_usable_speech(wav_path, scene_num, remove_invalid=True):
-                            file_size_kb = len(audio_bytes) // 1024
-                            print(f"[TTS] Scene {scene_num}: saved successfully ({file_size_kb}KB).")
-                            return wav_path
-
-                        print(f"[TTS] Scene {scene_num}: {model} produced implausibly long audio. Retrying...")
-                        break
-
-                print(f"[TTS] Scene {scene_num}: {model} returned no audio part.")
+                print(f"[TTS] Scene {scene_num}: {model} produced implausibly long audio. Retrying...")
 
             except Exception as e:
                 err_short = str(e)[:120]
